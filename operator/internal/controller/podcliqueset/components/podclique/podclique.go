@@ -30,6 +30,7 @@ import (
 	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
 	"github.com/ai-dynamo/grove/operator/internal/mnnvl"
+	"github.com/ai-dynamo/grove/operator/internal/resourceclaim"
 	"github.com/ai-dynamo/grove/operator/internal/utils"
 	k8sutils "github.com/ai-dynamo/grove/operator/internal/utils/kubernetes"
 
@@ -263,8 +264,19 @@ func (r _resource) doCreateOrUpdate(ctx context.Context, logger logr.Logger, pcs
 	pclq := emptyPodClique(pclqObjectKey)
 	pcsObjKey := client.ObjectKeyFromObject(pcs)
 
+	// Create ResourceClaims from referenced ResourceClaimTemplates before CreateOrPatch
+	// to avoid external API calls inside the mutate function.
+	claimNames, err := r.createResourceClaimsForPCLQ(ctx, logger, pcs, pclqObjectKey)
+	if err != nil {
+		return groveerr.WrapError(err,
+			errCodeCreateOrUpdatePodClique,
+			component.OperationSync,
+			fmt.Sprintf("Error creating ResourceClaims for PodClique: %v in PodCliqueSet: %v", pclqObjectKey, pcsObjKey),
+		)
+	}
+
 	opResult, err := controllerutil.CreateOrPatch(ctx, r.client, pclq, func() error {
-		return r.buildResource(logger, pclq, pcs, int(pcsReplica), pclqExists)
+		return r.buildResource(logger, pclq, pcs, int(pcsReplica), pclqExists, claimNames)
 	})
 	if err != nil {
 		r.eventRecorder.Eventf(pcs, corev1.EventTypeWarning, constants.ReasonPodCliqueCreateOrUpdateFailed, "PodClique %v creation or updation failed: %v", pclqObjectKey, err)
@@ -281,7 +293,7 @@ func (r _resource) doCreateOrUpdate(ctx context.Context, logger logr.Logger, pcs
 }
 
 // buildResource configures a PodClique with the desired state from the template.
-func (r _resource) buildResource(logger logr.Logger, pclq *grovecorev1alpha1.PodClique, pcs *grovecorev1alpha1.PodCliqueSet, pcsReplica int, pclqExists bool) error {
+func (r _resource) buildResource(logger logr.Logger, pclq *grovecorev1alpha1.PodClique, pcs *grovecorev1alpha1.PodCliqueSet, pcsReplica int, pclqExists bool, resourceClaimNames []string) error {
 	var err error
 	pclqObjectKey, pcsObjectKey := client.ObjectKeyFromObject(pclq), client.ObjectKeyFromObject(pcs)
 	pclqTemplateSpec, foundAtIndex, ok := lo.FindIndexOf(pcs.Spec.Template.Cliques, func(pclqTemplateSpec *grovecorev1alpha1.PodCliqueTemplateSpec) bool {
@@ -320,6 +332,7 @@ func (r _resource) buildResource(logger logr.Logger, pclq *grovecorev1alpha1.Pod
 		return err
 	}
 	pclq.Spec.StartsAfter = dependentPclqNames
+	pclq.Spec.ResourceClaimNames = resourceClaimNames
 
 	// Inject MNNVL resourceClaims if enabled on PCS
 	if mnnvl.IsAutoMNNVLEnabled(pcs.Annotations) {
@@ -327,6 +340,31 @@ func (r _resource) buildResource(logger logr.Logger, pclq *grovecorev1alpha1.Pod
 	}
 
 	return nil
+}
+
+// createResourceClaimsForPCLQ creates ResourceClaims for the ResourceClaimTemplateNames referenced
+// by the matching PodCliqueTemplateSpec. Returns the list of created ResourceClaim names.
+func (r _resource) createResourceClaimsForPCLQ(ctx context.Context, logger logr.Logger, pcs *grovecorev1alpha1.PodCliqueSet, pclqObjectKey client.ObjectKey) ([]string, error) {
+	pclqTemplateSpec, ok := lo.Find(pcs.Spec.Template.Cliques, func(t *grovecorev1alpha1.PodCliqueTemplateSpec) bool {
+		return strings.HasSuffix(pclqObjectKey.Name, t.Name)
+	})
+	if !ok {
+		return nil, fmt.Errorf("PodCliqueTemplateSpec for PodClique %v not found in PodCliqueSet %v", pclqObjectKey, client.ObjectKeyFromObject(pcs))
+	}
+	if len(pclqTemplateSpec.ResourceClaimTemplateNames) == 0 {
+		return nil, nil
+	}
+
+	var claimNames []string
+	for _, rctName := range pclqTemplateSpec.ResourceClaimTemplateNames {
+		claimName := resourceclaim.GenerateResourceClaimName(rctName, pclqObjectKey.Name)
+		name, err := resourceclaim.CreateOrGetResourceClaim(ctx, logger, r.client, r.scheme, rctName, claimName, pclqObjectKey.Namespace, pcs)
+		if err != nil {
+			return nil, err
+		}
+		claimNames = append(claimNames, name)
+	}
+	return claimNames, nil
 }
 
 // identifyFullyQualifiedStartupDependencyNames determines the PodClique startup dependencies based on StartupType.

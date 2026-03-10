@@ -92,6 +92,18 @@ spec:
                             Once set it cannot be updated.
                             More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#names
                           type: string
+                        resourceClaimTemplateNames:
+                          description: |-
+                            ResourceClaimTemplateNames is a list of resource.ResourceClaimTemplate names which will be used to create
+                            ResourceClaims that are added to the PodSpec of each Pod in the PodClique instance, thus allowing sharing of
+                            resources such as accelerators across all pods in the PodClique. One ResourceClaim is created per
+                            ResourceClaimTemplate name per PodClique instance. All ResourceClaims created will be completely managed by Grove.
+                            NOTE: This is not the same as adding ResourceClaimTemplate inside the
+                            Spec.PodSpec.ResourceClaims[x].ResourceClaimTemplateName in the PodClique since that will create a unique
+                            ResourceClaim for each pod in the PodClique.
+                          items:
+                            type: string
+                          type: array
                         spec:
                           description: |-
                             Specification of the desired behavior of a PodClique.
@@ -9221,6 +9233,14 @@ spec:
                                 pods in the clique. It cannot be less than 1.
                               format: int32
                               type: integer
+                            resourceClaimNames:
+                              description: |-
+                                ResourceClaimNames is the list of ResourceClaim names that have been created for this PodClique instance.
+                                These claims are injected into the PodSpec of every pod in the PodClique, enabling resource sharing
+                                amongst all pods in the instance. This field is managed by the controller and should not be set by users.
+                              items:
+                                type: string
+                              type: array
                             roleName:
                               description: RoleName is the name of the role that this
                                 PodClique will assume.
@@ -9329,6 +9349,39 @@ spec:
                             If not specified, it defaults to 1.
                           format: int32
                           type: integer
+                        resourceClaimTemplateConfigs:
+                          description: |-
+                            ResourceClaimTemplateConfigs is a list of ResourceClaimTemplateConfig which defines a common set of
+                            ResourceClaimTemplate names for a set of PodCliques in the scaling group. A ResourceClaim is created per
+                            ResourceClaimTemplate name per PodCliqueScalingGroup instance and added to the PodSpec of each PodClique
+                            specified in the CliqueNames field. This allows sharing of resources such as accelerators across all pods
+                            in the specified PodCliques that are part of one PodCliqueScalingGroup instance.
+                          items:
+                            description: |-
+                              ResourceClaimTemplateConfig defines a common set of ResourceClaimTemplate names for a set of PodCliques.
+                              A ResourceClaim is created per ResourceClaimTemplate name per PodCliqueScalingGroup instance and added to the
+                              PodSpec of each PodClique specified in the CliqueNames field. This allows sharing of resources such as
+                              accelerators across all pods in the specified PodCliques that are part of one PodCliqueScalingGroup instance.
+                            properties:
+                              cliqueNames:
+                                description: |-
+                                  CliqueNames is a list of names of PodCliques that will share the ResourceClaims created from the
+                                  ResourceClaimTemplates specified in the Names field. Each name must be a valid clique name within
+                                  the parent PodCliqueScalingGroupConfig's CliqueNames.
+                                items:
+                                  type: string
+                                type: array
+                              names:
+                                description: |-
+                                  Names is a list of ResourceClaimTemplate names which will be used to create ResourceClaims.
+                                  All ResourceClaimTemplates must exist in the same namespace as the PodCliqueSet.
+                                items:
+                                  type: string
+                                type: array
+                            required:
+                            - names
+                            type: object
+                          type: array
                         scaleConfig:
                           description: ScaleConfig is the horizontal pod autoscaler
                             configuration for the pod clique scaling group.

@@ -28,6 +28,7 @@ import (
 	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
 	"github.com/ai-dynamo/grove/operator/internal/expect"
+	"github.com/ai-dynamo/grove/operator/internal/resourceclaim"
 	"github.com/ai-dynamo/grove/operator/internal/utils"
 	k8sutils "github.com/ai-dynamo/grove/operator/internal/utils/kubernetes"
 
@@ -160,6 +161,9 @@ func (r _resource) buildResource(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grov
 	}
 	pod.Spec = *pclq.Spec.PodSpec.DeepCopy()
 	pod.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: podGangSchedulingGate}}
+	// Inject shared ResourceClaim references into PodSpec so all pods in the PCLQ instance
+	// share the same ResourceClaims (created by the PCLQ or PCSG controller).
+	resourceclaim.InjectResourceClaimsIntoPodSpec(&pod.Spec, pclq.Spec.ResourceClaimNames)
 	// Add GROVE specific Pod environment variables
 	addEnvironmentVariables(pod, pclq, pcsName, pcsReplicaIndex, podIndex)
 	// Configure hostname and subdomain for service discovery

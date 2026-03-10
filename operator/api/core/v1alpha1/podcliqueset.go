@@ -180,6 +180,15 @@ type PodCliqueTemplateSpec struct {
 	// Must be equal to or stricter than parent resource constraints.
 	// +optional
 	TopologyConstraint *TopologyConstraint `json:"topologyConstraint,omitempty"`
+	// ResourceClaimTemplateNames is a list of resource.ResourceClaimTemplate names which will be used to create
+	// ResourceClaims that are added to the PodSpec of each Pod in the PodClique instance, thus allowing sharing of
+	// resources such as accelerators across all pods in the PodClique. One ResourceClaim is created per
+	// ResourceClaimTemplate name per PodClique instance. All ResourceClaims created will be completely managed by Grove.
+	// NOTE: This is not the same as adding ResourceClaimTemplate inside the
+	// Spec.PodSpec.ResourceClaims[x].ResourceClaimTemplateName in the PodClique since that will create a unique
+	// ResourceClaim for each pod in the PodClique.
+	// +optional
+	ResourceClaimTemplateNames []string `json:"resourceClaimTemplateNames,omitempty"`
 	// Specification of the desired behavior of a PodClique.
 	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#spec-and-status
 	Spec PodCliqueSpec `json:"spec"`
@@ -195,6 +204,21 @@ type TopologyConstraint struct {
 	// Different replicas can be in different topology domains.
 	// +kubebuilder:validation:Enum=region;zone;datacenter;block;rack;host;numa
 	PackDomain TopologyDomain `json:"packDomain"`
+}
+
+// ResourceClaimTemplateConfig defines a common set of ResourceClaimTemplate names for a set of PodCliques.
+// A ResourceClaim is created per ResourceClaimTemplate name per PodCliqueScalingGroup instance and added to the
+// PodSpec of each PodClique specified in the CliqueNames field. This allows sharing of resources such as
+// accelerators across all pods in the specified PodCliques that are part of one PodCliqueScalingGroup instance.
+type ResourceClaimTemplateConfig struct {
+	// Names is a list of ResourceClaimTemplate names which will be used to create ResourceClaims.
+	// All ResourceClaimTemplates must exist in the same namespace as the PodCliqueSet.
+	Names []string `json:"names"`
+	// CliqueNames is a list of names of PodCliques that will share the ResourceClaims created from the
+	// ResourceClaimTemplates specified in the Names field. Each name must be a valid clique name within
+	// the parent PodCliqueScalingGroupConfig's CliqueNames.
+	// +optional
+	CliqueNames []string `json:"cliqueNames,omitempty"`
 }
 
 // PodCliqueScalingGroupConfig is a group of PodClique's that are scaled together.
@@ -232,6 +256,13 @@ type PodCliqueScalingGroupConfig struct {
 	// Must be equal to or stricter than parent PodCliqueSet constraints.
 	// +optional
 	TopologyConstraint *TopologyConstraint `json:"topologyConstraint,omitempty"`
+	// ResourceClaimTemplateConfigs is a list of ResourceClaimTemplateConfig which defines a common set of
+	// ResourceClaimTemplate names for a set of PodCliques in the scaling group. A ResourceClaim is created per
+	// ResourceClaimTemplate name per PodCliqueScalingGroup instance and added to the PodSpec of each PodClique
+	// specified in the CliqueNames field. This allows sharing of resources such as accelerators across all pods
+	// in the specified PodCliques that are part of one PodCliqueScalingGroup instance.
+	// +optional
+	ResourceClaimTemplateConfigs []ResourceClaimTemplateConfig `json:"resourceClaimTemplateConfigs,omitempty"`
 }
 
 // HeadlessServiceConfig defines the config options for the headless service.

@@ -231,6 +231,8 @@ func (v *pcsValidator) validatePodCliqueScalingGroupConfigs(fldPath *field.Path)
 				allErrs = append(allErrs, field.Invalid(fldPath.Index(i).Child("scaleConfig", "minReplicas"), *scalingGroupConfig.ScaleConfig.MinReplicas, "scaleConfig.minReplicas must be greater than or equal to minAvailable"))
 			}
 		}
+
+		allErrs = append(allErrs, validateResourceClaimTemplateConfigs(scalingGroupConfig, fldPath.Index(i).Child("resourceClaimTemplateConfigs"))...)
 	}
 
 	// validate that the scaling group names are unique
@@ -283,8 +285,47 @@ func (v *pcsValidator) validatePodCliqueTemplateSpec(cliqueTemplateSpec *groveco
 		allErrs = append(allErrs, errs...)
 	}
 	allErrs = append(allErrs, v.validatePodCliqueNameConstraints(fldPath, cliqueTemplateSpec, scalingGroupCliqueNames)...)
+	allErrs = append(allErrs, validateResourceClaimTemplateNames(cliqueTemplateSpec.ResourceClaimTemplateNames, fldPath.Child("resourceClaimTemplateNames"))...)
 
 	return warnings, allErrs
+}
+
+// validateResourceClaimTemplateNames validates that ResourceClaimTemplateNames entries are non-empty and unique.
+func validateResourceClaimTemplateNames(names []string, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+	for i, name := range names {
+		if len(name) == 0 {
+			allErrs = append(allErrs, field.Required(fldPath.Index(i), "ResourceClaimTemplate name must not be empty"))
+		}
+	}
+	allErrs = append(allErrs, sliceMustHaveUniqueElements(names, fldPath)...)
+	return allErrs
+}
+
+// validateResourceClaimTemplateConfigs validates ResourceClaimTemplateConfigs within a PodCliqueScalingGroupConfig.
+func validateResourceClaimTemplateConfigs(sgConfig grovecorev1alpha1.PodCliqueScalingGroupConfig, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+	for i, rctConfig := range sgConfig.ResourceClaimTemplateConfigs {
+		configPath := fldPath.Index(i)
+		if len(rctConfig.Names) == 0 {
+			allErrs = append(allErrs, field.Required(configPath.Child("names"), "at least one ResourceClaimTemplate name is required"))
+		}
+		for j, name := range rctConfig.Names {
+			if len(name) == 0 {
+				allErrs = append(allErrs, field.Required(configPath.Child("names").Index(j), "ResourceClaimTemplate name must not be empty"))
+			}
+		}
+		allErrs = append(allErrs, sliceMustHaveUniqueElements(rctConfig.Names, configPath.Child("names"))...)
+
+		for j, cliqueName := range rctConfig.CliqueNames {
+			if !slices.Contains(sgConfig.CliqueNames, cliqueName) {
+				allErrs = append(allErrs, field.Invalid(configPath.Child("cliqueNames").Index(j), cliqueName,
+					"must reference a clique name defined in the scaling group's cliqueNames"))
+			}
+		}
+		allErrs = append(allErrs, sliceMustHaveUniqueElements(rctConfig.CliqueNames, configPath.Child("cliqueNames"))...)
+	}
+	return allErrs
 }
 
 // validateCliqueDependencies validates that all clique dependencies refer to existing cliques and contain no circular dependencies.
@@ -519,6 +560,7 @@ func (v *pcsValidator) validatePodCliqueScalingGroupConfigsUpdate(oldConfigs []g
 		configFldPath := fldPath
 		allErrs = append(allErrs, apivalidation.ValidateImmutableField(newConfig.CliqueNames, oldConfig.CliqueNames, configFldPath.Child("cliqueNames"))...)
 		allErrs = append(allErrs, apivalidation.ValidateImmutableField(newConfig.MinAvailable, oldConfig.MinAvailable, configFldPath.Child("minAvailable"))...)
+		allErrs = append(allErrs, apivalidation.ValidateImmutableField(newConfig.ResourceClaimTemplateConfigs, oldConfig.ResourceClaimTemplateConfigs, configFldPath.Child("resourceClaimTemplateConfigs"))...)
 	}
 
 	return allErrs
@@ -572,6 +614,7 @@ func (v *pcsValidator) validatePodCliqueUpdate(oldCliques []*grovecorev1alpha1.P
 		allErrs = append(allErrs, apivalidation.ValidateImmutableField(newClique.Spec.RoleName, oldIndexCliqueTuple.B.Spec.RoleName, cliqueFldPath.Child("roleName"))...)
 		allErrs = append(allErrs, apivalidation.ValidateImmutableField(newClique.Spec.MinAvailable, oldIndexCliqueTuple.B.Spec.MinAvailable, cliqueFldPath.Child("minAvailable"))...)
 		allErrs = append(allErrs, apivalidation.ValidateImmutableField(newClique.Spec.StartsAfter, oldIndexCliqueTuple.B.Spec.StartsAfter, cliqueFldPath.Child("startsAfter"))...)
+		allErrs = append(allErrs, apivalidation.ValidateImmutableField(newClique.ResourceClaimTemplateNames, oldIndexCliqueTuple.B.ResourceClaimTemplateNames, fldPath.Child("resourceClaimTemplateNames"))...)
 	}
 
 	return allErrs

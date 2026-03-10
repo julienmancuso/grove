@@ -960,7 +960,7 @@ func TestBuildResource_MNNVLInjection(t *testing.T) {
 				eventRecorder: &record.FakeRecorder{},
 			}
 
-			err := operator.buildResource(logr.Discard(), pcs, pcsg, pcsgReplicaIndex, pclq)
+			err := operator.buildResource(logr.Discard(), pcs, pcsg, pcsgReplicaIndex, pclq, nil)
 			require.NoError(t, err)
 
 			// Verify pod-level claims
@@ -1009,4 +1009,103 @@ func triageContainersByMNNVLClaim(containers []corev1.Container) (withClaim, wit
 		}
 	}
 	return withClaim, withoutClaim
+}
+
+func TestBuildResource_ResourceClaimNames(t *testing.T) {
+	tests := []struct {
+		description           string
+		resourceClaimNames    []string
+		expectedClaimNames    []string
+		expectedClaimNamesNil bool
+	}{
+		{
+			description:           "nil resourceClaimNames results in nil on PodClique spec",
+			resourceClaimNames:    nil,
+			expectedClaimNamesNil: true,
+		},
+		{
+			description:        "single claim name is propagated to PodClique spec",
+			resourceClaimNames: []string{"test-pcs-0-pcsg-0-worker-gpu-claim"},
+			expectedClaimNames: []string{"test-pcs-0-pcsg-0-worker-gpu-claim"},
+		},
+		{
+			description:        "multiple claim names are propagated to PodClique spec",
+			resourceClaimNames: []string{"test-pcs-0-pcsg-0-worker-gpu-claim", "test-pcs-0-pcsg-0-nic-claim"},
+			expectedClaimNames: []string{"test-pcs-0-pcsg-0-worker-gpu-claim", "test-pcs-0-pcsg-0-nic-claim"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.description, func(t *testing.T) {
+			pcsName := "test-pcs"
+			pcsNamespace := "default"
+			pcsReplicaIndex := 0
+			pcsgReplicaIndex := 0
+			pclqTemplateName := "worker"
+
+			pcs := &grovecorev1alpha1.PodCliqueSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      pcsName,
+					Namespace: pcsNamespace,
+				},
+				Spec: grovecorev1alpha1.PodCliqueSetSpec{
+					Template: grovecorev1alpha1.PodCliqueSetTemplateSpec{
+						StartupType: ptr.To(grovecorev1alpha1.CliqueStartupTypeAnyOrder),
+						Cliques: []*grovecorev1alpha1.PodCliqueTemplateSpec{
+							{
+								Name: pclqTemplateName,
+								Spec: grovecorev1alpha1.PodCliqueSpec{
+									Replicas:     1,
+									MinAvailable: ptr.To(int32(1)),
+									PodSpec: corev1.PodSpec{
+										Containers: []corev1.Container{{Name: "main"}},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			pcsg := &grovecorev1alpha1.PodCliqueScalingGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("%s-%d", pcsName, pcsReplicaIndex),
+					Namespace: pcsNamespace,
+					Labels: map[string]string{
+						apicommon.LabelPodCliqueSetReplicaIndex: fmt.Sprintf("%d", pcsReplicaIndex),
+					},
+				},
+				Spec: grovecorev1alpha1.PodCliqueScalingGroupSpec{
+					MinAvailable: ptr.To(int32(1)),
+					CliqueNames:  []string{pclqTemplateName},
+				},
+			}
+
+			pclqName := fmt.Sprintf("%s-%d-%s-%d-%s", pcsName, pcsReplicaIndex, "pcsg", pcsgReplicaIndex, pclqTemplateName)
+			pclq := &grovecorev1alpha1.PodClique{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      pclqName,
+					Namespace: pcsNamespace,
+				},
+			}
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, grovecorev1alpha1.AddToScheme(scheme))
+
+			operator := &_resource{
+				client:        nil,
+				scheme:        scheme,
+				eventRecorder: &record.FakeRecorder{},
+			}
+
+			err := operator.buildResource(logr.Discard(), pcs, pcsg, pcsgReplicaIndex, pclq, tc.resourceClaimNames)
+			require.NoError(t, err)
+
+			if tc.expectedClaimNamesNil {
+				assert.Nil(t, pclq.Spec.ResourceClaimNames)
+			} else {
+				assert.Equal(t, tc.expectedClaimNames, pclq.Spec.ResourceClaimNames)
+			}
+		})
+	}
 }

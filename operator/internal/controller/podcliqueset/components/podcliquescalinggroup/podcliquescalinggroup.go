@@ -215,6 +215,7 @@ func (r _resource) buildResource(pcsg *grovecorev1alpha1.PodCliqueScalingGroup, 
 	}
 	pcsg.Spec.MinAvailable = pcsgConfig.MinAvailable
 	pcsg.Spec.CliqueNames = pcsgConfig.CliqueNames
+	pcsg.Spec.ResourceClaimTemplateConfigs = pcsgConfig.ResourceClaimTemplateConfigs
 	pcsg.Labels = getLabels(pcs, pcsReplica, client.ObjectKeyFromObject(pcsg))
 
 	// Propagate MNNVL annotation from PCS to PCSG.

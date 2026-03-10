@@ -68,6 +68,11 @@ type PodCliqueScalingGroupSpec struct {
 	// CliqueNames is the list of PodClique names that are configured in the
 	// matching PodCliqueScalingGroup in PodCliqueSet.Spec.Template.PodCliqueScalingGroupConfigs.
 	CliqueNames []string `json:"cliqueNames"`
+	// ResourceClaimTemplateConfigs is the list of ResourceClaimTemplateConfig propagated from
+	// PodCliqueScalingGroupConfig. It defines which ResourceClaimTemplates to use and which PodCliques
+	// within the scaling group should share the resulting ResourceClaims.
+	// +optional
+	ResourceClaimTemplateConfigs []ResourceClaimTemplateConfig `json:"resourceClaimTemplateConfigs,omitempty"`
 }
 
 // PodCliqueScalingGroupStatus is the status of the PodCliqueScalingGroup.

@@ -391,7 +391,7 @@ func TestBuildResource_MNNVLInjection(t *testing.T) {
 				eventRecorder: record.NewFakeRecorder(10),
 			}
 
-			err := operator.buildResource(logr.Discard(), pclq, pcs, pcsReplica, false)
+			err := operator.buildResource(logr.Discard(), pclq, pcs, pcsReplica, false, nil)
 			require.NoError(t, err)
 
 			// Verify pod-level claims
@@ -440,4 +440,67 @@ func triageContainersByMNNVLClaim(containers []corev1.Container) (withClaim, wit
 		}
 	}
 	return withClaim, withoutClaim
+}
+
+func TestBuildResource_ResourceClaimNames(t *testing.T) {
+	tests := []struct {
+		description            string
+		resourceClaimNames     []string
+		expectedClaimNames     []string
+		expectedClaimNamesNil  bool
+	}{
+		{
+			description:           "nil resourceClaimNames results in nil on PodClique spec",
+			resourceClaimNames:    nil,
+			expectedClaimNamesNil: true,
+		},
+		{
+			description:        "single claim name is propagated to PodClique spec",
+			resourceClaimNames: []string{"my-pcs-0-worker-gpu-claim"},
+			expectedClaimNames: []string{"my-pcs-0-worker-gpu-claim"},
+		},
+		{
+			description:        "multiple claim names are propagated to PodClique spec",
+			resourceClaimNames: []string{"my-pcs-0-worker-gpu-claim", "my-pcs-0-worker-nic-claim"},
+			expectedClaimNames: []string{"my-pcs-0-worker-gpu-claim", "my-pcs-0-worker-nic-claim"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.description, func(t *testing.T) {
+			pcsReplica := 0
+			pclqTemplateName := "worker"
+
+			pcsBuilder := testutils.NewPodCliqueSetBuilder(testPCSName, testPCSNamespace, uuid.NewUUID()).
+				WithReplicas(1).
+				WithCliqueStartupType(ptr.To(grovecorev1alpha1.CliqueStartupTypeAnyOrder))
+
+			pclqTemplateSpec := testutils.NewPodCliqueTemplateSpecBuilder(pclqTemplateName).Build()
+			pcsBuilder.WithPodCliqueTemplateSpec(pclqTemplateSpec)
+			pcs := pcsBuilder.Build()
+
+			pclqName := fmt.Sprintf("%s-%d-%s", testPCSName, pcsReplica, pclqTemplateName)
+			pclq := &grovecorev1alpha1.PodClique{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      pclqName,
+					Namespace: testPCSNamespace,
+				},
+			}
+
+			operator := &_resource{
+				client:        nil,
+				scheme:        groveclientscheme.Scheme,
+				eventRecorder: record.NewFakeRecorder(10),
+			}
+
+			err := operator.buildResource(logr.Discard(), pclq, pcs, pcsReplica, false, tc.resourceClaimNames)
+			require.NoError(t, err)
+
+			if tc.expectedClaimNamesNil {
+				assert.Nil(t, pclq.Spec.ResourceClaimNames)
+			} else {
+				assert.Equal(t, tc.expectedClaimNames, pclq.Spec.ResourceClaimNames)
+			}
+		})
+	}
 }

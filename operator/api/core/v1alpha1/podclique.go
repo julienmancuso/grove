@@ -76,6 +76,12 @@ type PodCliqueSpec struct {
 	// ScaleConfig is the horizontal pod autoscaler configuration for a PodClique.
 	// +optional
 	ScaleConfig *AutoScalingConfig `json:"autoScalingConfig,omitempty"`
+	// ResourceClaimNames is the list of ResourceClaim names to inject into the PodSpec of every pod
+	// in this PodClique instance, enabling resource sharing amongst all pods in the instance.
+	// When a PodClique is managed by a PCS or PCSG, the controller populates this field automatically
+	// from the ResourceClaimTemplateNames and ResourceClaimTemplateConfigs configuration.
+	// +optional
+	ResourceClaimNames []string `json:"resourceClaimNames,omitempty"`
 }
 
 // AutoScalingConfig defines the configuration for the horizontal pod autoscaler.

@@ -22,10 +22,14 @@ import (
 	"github.com/ai-dynamo/grove/operator/api/common"
 	"github.com/ai-dynamo/grove/operator/api/common/constants"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
+	groveclientscheme "github.com/ai-dynamo/grove/operator/internal/client"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 )
 
 // TestGetSelectorLabelsForPods_PCSGOwnedPodClique tests that getSelectorLabelsForPods
@@ -523,5 +527,115 @@ func assertNoDuplicateEnvVars(t *testing.T, container corev1.Container) {
 	}
 	for envName, count := range envVarCounts {
 		assert.Equal(t, 1, count, "environment variable %s appears %d times (should be 1)", envName, count)
+	}
+}
+
+func TestBuildResource_ResourceClaimInjection(t *testing.T) {
+	const (
+		pcsName          = "test-pcs"
+		pcsNamespace     = "test-ns"
+		pclqTemplateName = "worker"
+	)
+
+	tests := []struct {
+		description               string
+		resourceClaimNames        []string
+		containers                []corev1.Container
+		initContainers            []corev1.Container
+		expectedPodResourceClaims int
+		expectedContainerClaims   int
+		expectedInitClaims        int
+	}{
+		{
+			description:        "nil ResourceClaimNames does not inject any claims",
+			resourceClaimNames: nil,
+			containers: []corev1.Container{
+				{Name: "main", Image: "test:latest"},
+			},
+			expectedPodResourceClaims: 0,
+			expectedContainerClaims:   0,
+		},
+		{
+			description:        "single claim is injected into pod and all containers",
+			resourceClaimNames: []string{"test-pcs-0-worker-gpu-claim"},
+			containers: []corev1.Container{
+				{Name: "main", Image: "test:latest"},
+				{Name: "sidecar", Image: "test:latest"},
+			},
+			initContainers: []corev1.Container{
+				{Name: "init", Image: "test:latest"},
+			},
+			expectedPodResourceClaims: 1,
+			expectedContainerClaims:   1,
+			expectedInitClaims:        1,
+		},
+		{
+			description:        "multiple claims are injected into pod and all containers",
+			resourceClaimNames: []string{"test-pcs-0-worker-gpu-claim", "test-pcs-0-nic-claim"},
+			containers: []corev1.Container{
+				{Name: "main", Image: "test:latest"},
+			},
+			expectedPodResourceClaims: 2,
+			expectedContainerClaims:   2,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.description, func(t *testing.T) {
+			pcs := &grovecorev1alpha1.PodCliqueSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      pcsName,
+					Namespace: pcsNamespace,
+					UID:       types.UID("pcs-uid"),
+				},
+			}
+
+			pclq := &grovecorev1alpha1.PodClique{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      pcsName + "-0-" + pclqTemplateName,
+					Namespace: pcsNamespace,
+					UID:       types.UID("pclq-uid"),
+					Labels: map[string]string{
+						common.LabelPartOfKey: pcsName,
+					},
+				},
+				Spec: grovecorev1alpha1.PodCliqueSpec{
+					ResourceClaimNames: tc.resourceClaimNames,
+					PodSpec: corev1.PodSpec{
+						Containers:     tc.containers,
+						InitContainers: tc.initContainers,
+					},
+				},
+			}
+
+			operator := &_resource{
+				scheme:        groveclientscheme.Scheme,
+				eventRecorder: record.NewFakeRecorder(10),
+			}
+
+			pod := &corev1.Pod{}
+			err := operator.buildResource(pcs, pclq, "test-podgang", pod, 0)
+			require.NoError(t, err)
+
+			assert.Len(t, pod.Spec.ResourceClaims, tc.expectedPodResourceClaims,
+				"pod should have %d PodResourceClaim entries", tc.expectedPodResourceClaims)
+
+			// Verify each PodResourceClaim references the correct ResourceClaim name.
+			for i, podClaim := range pod.Spec.ResourceClaims {
+				require.NotNil(t, podClaim.ResourceClaimName,
+					"PodResourceClaim[%d] should have a ResourceClaimName", i)
+				assert.Equal(t, podClaim.Name, *podClaim.ResourceClaimName)
+			}
+
+			// Verify container-level claim references.
+			for _, container := range pod.Spec.Containers {
+				assert.Len(t, container.Resources.Claims, tc.expectedContainerClaims,
+					"container %s should have %d resource claims", container.Name, tc.expectedContainerClaims)
+			}
+			for _, container := range pod.Spec.InitContainers {
+				assert.Len(t, container.Resources.Claims, tc.expectedInitClaims,
+					"init container %s should have %d resource claims", container.Name, tc.expectedInitClaims)
+			}
+		})
 	}
 }

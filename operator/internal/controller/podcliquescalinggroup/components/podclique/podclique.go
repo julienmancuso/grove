@@ -32,6 +32,7 @@ import (
 	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
 	"github.com/ai-dynamo/grove/operator/internal/mnnvl"
+	"github.com/ai-dynamo/grove/operator/internal/resourceclaim"
 	"github.com/ai-dynamo/grove/operator/internal/utils"
 	k8sutils "github.com/ai-dynamo/grove/operator/internal/utils/kubernetes"
 
@@ -234,7 +235,17 @@ func (r _resource) doCreate(ctx context.Context, logger logr.Logger, pcs *grovec
 	logger.Info("Running CreateOrUpdate PodClique", "pclqObjectKey", pclqObjectKey)
 	pclq := emptyPodClique(pclqObjectKey)
 	pcsgObjKey := client.ObjectKeyFromObject(pclq)
-	if err := r.buildResource(logger, pcs, pcsg, pcsgReplicaIndex, pclq); err != nil {
+
+	claimNames, err := r.createResourceClaimsForPCLQ(ctx, logger, pcs, pcsg, pcsgReplicaIndex, pclqObjectKey)
+	if err != nil {
+		return groveerr.WrapError(err,
+			errCodeCreatePodClique,
+			component.OperationSync,
+			fmt.Sprintf("Error creating ResourceClaims for PodClique: %v in PodCliqueScalingGroup: %v", pclqObjectKey, pcsgObjKey),
+		)
+	}
+
+	if err := r.buildResource(logger, pcs, pcsg, pcsgReplicaIndex, pclq, claimNames); err != nil {
 		return err
 	}
 	if err := r.client.Create(ctx, pclq); err != nil {
@@ -255,7 +266,7 @@ func (r _resource) doCreate(ctx context.Context, logger logr.Logger, pcs *grovec
 }
 
 // buildResource constructs a PodClique resource from templates, setting up metadata, labels, dependencies and environment variables
-func (r _resource) buildResource(logger logr.Logger, pcs *grovecorev1alpha1.PodCliqueSet, pcsg *grovecorev1alpha1.PodCliqueScalingGroup, pcsgReplicaIndex int, pclq *grovecorev1alpha1.PodClique) error {
+func (r _resource) buildResource(logger logr.Logger, pcs *grovecorev1alpha1.PodCliqueSet, pcsg *grovecorev1alpha1.PodCliqueScalingGroup, pcsgReplicaIndex int, pclq *grovecorev1alpha1.PodClique, resourceClaimNames []string) error {
 	var err error
 	pclqObjectKey, pcsObjectKey := client.ObjectKeyFromObject(pclq), client.ObjectKeyFromObject(pcs)
 	pclqTemplateSpec, foundAtIndex, ok := lo.FindIndexOf(pcs.Spec.Template.Cliques, func(pclqTemplateSpec *grovecorev1alpha1.PodCliqueTemplateSpec) bool {
@@ -297,6 +308,7 @@ func (r _resource) buildResource(logger logr.Logger, pcs *grovecorev1alpha1.PodC
 		return err
 	}
 	pclq.Spec.StartsAfter = dependentPCLQNames
+	pclq.Spec.ResourceClaimNames = resourceClaimNames
 
 	// Inject MNNVL resourceClaims if enabled on PCSG (propagated from PCS)
 	if mnnvl.IsAutoMNNVLEnabled(pcsg.Annotations) {
@@ -304,6 +316,51 @@ func (r _resource) buildResource(logger logr.Logger, pcs *grovecorev1alpha1.PodC
 	}
 
 	return nil
+}
+
+// createResourceClaimsForPCLQ creates ResourceClaims from both PCLQ-level and PCSG-level ResourceClaimTemplateNames
+// for the matching PodCliqueTemplateSpec. Returns the combined list of created ResourceClaim names.
+func (r _resource) createResourceClaimsForPCLQ(ctx context.Context, logger logr.Logger, pcs *grovecorev1alpha1.PodCliqueSet, pcsg *grovecorev1alpha1.PodCliqueScalingGroup, pcsgReplicaIndex int, pclqObjectKey client.ObjectKey) ([]string, error) {
+	pclqTemplateSpec, ok := lo.Find(pcs.Spec.Template.Cliques, func(t *grovecorev1alpha1.PodCliqueTemplateSpec) bool {
+		return strings.HasSuffix(pclqObjectKey.Name, t.Name)
+	})
+	if !ok {
+		return nil, fmt.Errorf("PodCliqueTemplateSpec for PodClique %v not found in PodCliqueSet %v", pclqObjectKey, client.ObjectKeyFromObject(pcs))
+	}
+
+	var claimNames []string
+
+	// PCLQ-level: ResourceClaims scoped to this PCLQ instance.
+	for _, rctName := range pclqTemplateSpec.ResourceClaimTemplateNames {
+		claimName := resourceclaim.GenerateResourceClaimName(rctName, pclqObjectKey.Name)
+		name, err := resourceclaim.CreateOrGetResourceClaim(ctx, logger, r.client, r.scheme, rctName, claimName, pclqObjectKey.Namespace, pcs)
+		if err != nil {
+			return nil, err
+		}
+		claimNames = append(claimNames, name)
+	}
+
+	// PCSG-level: ResourceClaims scoped to a specific PCSG replica, shared across eligible PodCliques.
+	// pcsg.Name is the fully-qualified PCSG name (e.g. "my-pcs-0-sga"), but a single PCSG object
+	// manages multiple replicas. We append the replica index to isolate claims per replica.
+	pcsgReplicaIdentifier := fmt.Sprintf("%s-%d", pcsg.Name, pcsgReplicaIndex)
+	for _, rctConfig := range pcsg.Spec.ResourceClaimTemplateConfigs {
+		// Only include claims if this clique is listed in the config's CliqueNames,
+		// or if CliqueNames is empty (share with all cliques in the PCSG).
+		if len(rctConfig.CliqueNames) > 0 && !slices.Contains(rctConfig.CliqueNames, pclqTemplateSpec.Name) {
+			continue
+		}
+		for _, rctName := range rctConfig.Names {
+			claimName := resourceclaim.GenerateResourceClaimName(rctName, pcsgReplicaIdentifier)
+			name, err := resourceclaim.CreateOrGetResourceClaim(ctx, logger, r.client, r.scheme, rctName, claimName, pclqObjectKey.Namespace, pcs)
+			if err != nil {
+				return nil, err
+			}
+			claimNames = append(claimNames, name)
+		}
+	}
+
+	return claimNames, nil
 }
 
 // addEnvironmentVariablesToPodContainerSpecs injects PCSG-specific environment variables into all containers in the PodClique

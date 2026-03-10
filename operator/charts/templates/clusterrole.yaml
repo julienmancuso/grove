@@ -141,6 +141,26 @@ rules:
   - patch
   - update
   - delete
+# DRA (Dynamic Resource Allocation) support for hierarchical resource sharing.
+# ResourceClaims are created by the operator to share resources (e.g. GPUs) across pods.
+- apiGroups:
+  - resource.k8s.io
+  resources:
+  - resourceclaims
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - delete
+- apiGroups:
+  - resource.k8s.io
+  resources:
+  - resourceclaimtemplates
+  verbs:
+  - get
+  - list
+  - watch
 {{- if .Values.config.network.autoMNNVLEnabled }}
 # MNNVL (Multi-Node NVLink) support requires permissions for ComputeDomain and ResourceClaimTemplate resources.
 # Note: Kubernetes allows RBAC rules for resources that don't exist yet. If the ComputeDomain CRD is not installed,
@@ -159,16 +179,14 @@ rules:
   - delete
   - patch
   - update
-# ResourceClaimTemplates for DRA integration
+# ResourceClaimTemplates write access for MNNVL DRA integration
+# (get/list/watch already granted unconditionally above)
 - apiGroups:
   - resource.k8s.io
   resources:
   - resourceclaimtemplates
   verbs:
   - create
-  - get
-  - list
-  - watch
   - delete
   - patch
   - update
