@@ -778,6 +778,11 @@ func (in *PodCliqueSpec) DeepCopyInto(out *PodCliqueSpec) {
 		*out = new(AutoScalingConfig)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.ResourceClaimTemplateNames != nil {
+		in, out := &in.ResourceClaimTemplateNames, &out.ResourceClaimTemplateNames
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.ResourceClaimNames != nil {
 		in, out := &in.ResourceClaimNames, &out.ResourceClaimNames
 		*out = make([]string, len(*in))

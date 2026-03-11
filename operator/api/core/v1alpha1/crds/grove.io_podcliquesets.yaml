@@ -95,9 +95,9 @@ spec:
                         resourceClaimTemplateNames:
                           description: |-
                             ResourceClaimTemplateNames is a list of resource.ResourceClaimTemplate names which will be used to create
-                            ResourceClaims that are added to the PodSpec of each Pod in the PodClique instance, thus allowing sharing of
-                            resources such as accelerators across all pods in the PodClique. One ResourceClaim is created per
-                            ResourceClaimTemplate name per PodClique instance. All ResourceClaims created will be completely managed by Grove.
+                            ResourceClaims that are added to the PodSpec of each Pod in the PodClique replica, thus allowing sharing of
+                            resources such as accelerators across all pods in the same replica. One ResourceClaim is created per
+                            ResourceClaimTemplate name per PodClique replica. All ResourceClaims created will be completely managed by Grove.
                             NOTE: This is not the same as adding ResourceClaimTemplate inside the
                             Spec.PodSpec.ResourceClaims[x].ResourceClaimTemplateName in the PodClique since that will create a unique
                             ResourceClaim for each pod in the PodClique.
@@ -9235,10 +9235,20 @@ spec:
                               type: integer
                             resourceClaimNames:
                               description: |-
-                                ResourceClaimNames is the list of ResourceClaim names to inject into the PodSpec of every pod
-                                in this PodClique instance, enabling resource sharing amongst all pods in the instance.
-                                When a PodClique is managed by a PCS or PCSG, the controller populates this field automatically
-                                from the ResourceClaimTemplateNames and ResourceClaimTemplateConfigs configuration.
+                                ResourceClaimNames is the list of pre-created ResourceClaim names to inject into the PodSpec
+                                of every pod in this PodClique, enabling cross-replica resource sharing. For PCSG-managed
+                                PodCliques, the controller populates this field with PCSG-level ResourceClaim names created
+                                from ResourceClaimTemplateConfigs.
+                              items:
+                                type: string
+                              type: array
+                            resourceClaimTemplateNames:
+                              description: |-
+                                ResourceClaimTemplateNames is the list of ResourceClaimTemplate names from which per-replica
+                                ResourceClaims are created. The Pod controller creates one ResourceClaim per template per
+                                PodClique replica and injects it into the PodSpec, enabling resource sharing across all pods
+                                in the same replica. When a PodClique is managed by a PCS or PCSG, the controller copies
+                                this field from PodCliqueTemplateSpec.ResourceClaimTemplateNames.
                               items:
                                 type: string
                               type: array

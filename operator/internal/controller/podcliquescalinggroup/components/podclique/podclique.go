@@ -236,7 +236,7 @@ func (r _resource) doCreate(ctx context.Context, logger logr.Logger, pcs *grovec
 	pclq := emptyPodClique(pclqObjectKey)
 	pcsgObjKey := client.ObjectKeyFromObject(pclq)
 
-	claimNames, err := r.createResourceClaimsForPCLQ(ctx, logger, pcs, pcsg, pcsgReplicaIndex, pclqObjectKey)
+	claimNames, err := r.createPCSGLevelResourceClaims(ctx, logger, pcs, pcsg, pcsgReplicaIndex, pclqObjectKey)
 	if err != nil {
 		return groveerr.WrapError(err,
 			errCodeCreatePodClique,
@@ -308,6 +308,7 @@ func (r _resource) buildResource(logger logr.Logger, pcs *grovecorev1alpha1.PodC
 		return err
 	}
 	pclq.Spec.StartsAfter = dependentPCLQNames
+	pclq.Spec.ResourceClaimTemplateNames = pclqTemplateSpec.ResourceClaimTemplateNames
 	pclq.Spec.ResourceClaimNames = resourceClaimNames
 
 	// Inject MNNVL resourceClaims if enabled on PCSG (propagated from PCS)
@@ -318,9 +319,12 @@ func (r _resource) buildResource(logger logr.Logger, pcs *grovecorev1alpha1.PodC
 	return nil
 }
 
-// createResourceClaimsForPCLQ creates ResourceClaims from both PCLQ-level and PCSG-level ResourceClaimTemplateNames
-// for the matching PodCliqueTemplateSpec. Returns the combined list of created ResourceClaim names.
-func (r _resource) createResourceClaimsForPCLQ(ctx context.Context, logger logr.Logger, pcs *grovecorev1alpha1.PodCliqueSet, pcsg *grovecorev1alpha1.PodCliqueScalingGroup, pcsgReplicaIndex int, pclqObjectKey client.ObjectKey) ([]string, error) {
+// createPCSGLevelResourceClaims creates PCSG-level ResourceClaims scoped to a specific PCSG replica,
+// shared across eligible PodCliques. Returns the list of created ResourceClaim names.
+func (r _resource) createPCSGLevelResourceClaims(ctx context.Context, logger logr.Logger, pcs *grovecorev1alpha1.PodCliqueSet, pcsg *grovecorev1alpha1.PodCliqueScalingGroup, pcsgReplicaIndex int, pclqObjectKey client.ObjectKey) ([]string, error) {
+	if len(pcsg.Spec.ResourceClaimTemplateConfigs) == 0 {
+		return nil, nil
+	}
 	pclqTemplateSpec, ok := lo.Find(pcs.Spec.Template.Cliques, func(t *grovecorev1alpha1.PodCliqueTemplateSpec) bool {
 		return strings.HasSuffix(pclqObjectKey.Name, t.Name)
 	})
@@ -329,18 +333,6 @@ func (r _resource) createResourceClaimsForPCLQ(ctx context.Context, logger logr.
 	}
 
 	var claimNames []string
-
-	// PCLQ-level: ResourceClaims scoped to this PCLQ instance.
-	for _, rctName := range pclqTemplateSpec.ResourceClaimTemplateNames {
-		claimName := resourceclaim.GenerateResourceClaimName(rctName, pclqObjectKey.Name)
-		name, err := resourceclaim.CreateOrGetResourceClaim(ctx, logger, r.client, r.scheme, rctName, claimName, pclqObjectKey.Namespace, pcs)
-		if err != nil {
-			return nil, err
-		}
-		claimNames = append(claimNames, name)
-	}
-
-	// PCSG-level: ResourceClaims scoped to a specific PCSG replica, shared across eligible PodCliques.
 	// pcsg.Name is the fully-qualified PCSG name (e.g. "my-pcs-0-sga"), but a single PCSG object
 	// manages multiple replicas. We append the replica index to isolate claims per replica.
 	pcsgReplicaIdentifier := fmt.Sprintf("%s-%d", pcsg.Name, pcsgReplicaIndex)

@@ -181,9 +181,9 @@ type PodCliqueTemplateSpec struct {
 	// +optional
 	TopologyConstraint *TopologyConstraint `json:"topologyConstraint,omitempty"`
 	// ResourceClaimTemplateNames is a list of resource.ResourceClaimTemplate names which will be used to create
-	// ResourceClaims that are added to the PodSpec of each Pod in the PodClique instance, thus allowing sharing of
-	// resources such as accelerators across all pods in the PodClique. One ResourceClaim is created per
-	// ResourceClaimTemplate name per PodClique instance. All ResourceClaims created will be completely managed by Grove.
+	// ResourceClaims that are added to the PodSpec of each Pod in the PodClique replica, thus allowing sharing of
+	// resources such as accelerators across all pods in the same replica. One ResourceClaim is created per
+	// ResourceClaimTemplate name per PodClique replica. All ResourceClaims created will be completely managed by Grove.
 	// NOTE: This is not the same as adding ResourceClaimTemplate inside the
 	// Spec.PodSpec.ResourceClaims[x].ResourceClaimTemplateName in the PodClique since that will create a unique
 	// ResourceClaim for each pod in the PodClique.

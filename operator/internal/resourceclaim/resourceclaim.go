@@ -32,9 +32,15 @@ import (
 )
 
 // GenerateResourceClaimName produces a deterministic ResourceClaim name scoped to an instance.
-// The instanceName is typically the PCLQ or PCSG fully-qualified name.
+// The instanceName is typically the PCSG fully-qualified name with replica index.
 func GenerateResourceClaimName(rctName, instanceName string) string {
 	return fmt.Sprintf("%s-%s", instanceName, rctName)
+}
+
+// GeneratePerReplicaResourceClaimName produces a deterministic ResourceClaim name
+// scoped to a specific PodClique replica.
+func GeneratePerReplicaResourceClaimName(rctName, pclqName string, replicaIndex int) string {
+	return fmt.Sprintf("%s-%d-%s", pclqName, replicaIndex, rctName)
 }
 
 // CreateOrGetResourceClaim ensures a ResourceClaim exists for the given ResourceClaimTemplate and instance.

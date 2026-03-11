@@ -132,8 +132,9 @@ func (r _resource) Sync(ctx context.Context, logger logr.Logger, pclq *grovecore
 	return nil
 }
 
-// buildResource constructs a Pod resource from PodClique specifications, setting up metadata, labels, scheduling gates, and dependencies
-func (r _resource) buildResource(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grovecorev1alpha1.PodClique, podGangName string, pod *corev1.Pod, podIndex int) error {
+// buildResource constructs a Pod resource from PodClique specifications, setting up metadata, labels, scheduling gates, and dependencies.
+// resourceClaimNames is the combined list of per-replica and PCSG-level claim names to inject.
+func (r _resource) buildResource(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grovecorev1alpha1.PodClique, podGangName string, pod *corev1.Pod, podIndex int, resourceClaimNames []string) error {
 	// Extract PCS replica index from PodClique name for now (will be replaced with direct parameter)
 	pcsName := componentutils.GetPodCliqueSetName(pclq.ObjectMeta)
 	pcsReplicaIndex, err := utils.GetPodCliqueSetReplicaIndexFromPodCliqueFQN(pcsName, pclq.Name)
@@ -161,9 +162,9 @@ func (r _resource) buildResource(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grov
 	}
 	pod.Spec = *pclq.Spec.PodSpec.DeepCopy()
 	pod.Spec.SchedulingGates = []corev1.PodSchedulingGate{{Name: podGangSchedulingGate}}
-	// Inject shared ResourceClaim references into PodSpec so all pods in the PCLQ instance
-	// share the same ResourceClaims (created by the PCLQ or PCSG controller).
-	resourceclaim.InjectResourceClaimsIntoPodSpec(&pod.Spec, pclq.Spec.ResourceClaimNames)
+	// Inject shared ResourceClaim references into PodSpec so all pods in the same PCLQ replica
+	// share the same per-replica claims, and all pods in the PCLQ share PCSG-level claims.
+	resourceclaim.InjectResourceClaimsIntoPodSpec(&pod.Spec, resourceClaimNames)
 	// Add GROVE specific Pod environment variables
 	addEnvironmentVariables(pod, pclq, pcsName, pcsReplicaIndex, podIndex)
 	// Configure hostname and subdomain for service discovery
@@ -260,6 +261,25 @@ func addEnvironmentVariables(pod *corev1.Pod, pclq *grovecorev1alpha1.PodClique,
 	}
 	componentutils.AddEnvVarsToContainers(pod.Spec.Containers, groveEnvVars)
 	componentutils.AddEnvVarsToContainers(pod.Spec.InitContainers, groveEnvVars)
+}
+
+// createPerReplicaResourceClaims creates ResourceClaims from the PCLQ's ResourceClaimTemplateNames
+// for a specific replica index. Each claim is owned by the PodClique so it is garbage-collected
+// when the PodClique is deleted, but survives individual pod re-creations.
+func (r _resource) createPerReplicaResourceClaims(ctx context.Context, logger logr.Logger, pclq *grovecorev1alpha1.PodClique, replicaIndex int) ([]string, error) {
+	if len(pclq.Spec.ResourceClaimTemplateNames) == 0 {
+		return nil, nil
+	}
+	claimNames := make([]string, 0, len(pclq.Spec.ResourceClaimTemplateNames))
+	for _, rctName := range pclq.Spec.ResourceClaimTemplateNames {
+		claimName := resourceclaim.GeneratePerReplicaResourceClaimName(rctName, pclq.Name, replicaIndex)
+		name, err := resourceclaim.CreateOrGetResourceClaim(ctx, logger, r.client, r.scheme, rctName, claimName, pclq.Namespace, pclq)
+		if err != nil {
+			return nil, err
+		}
+		claimNames = append(claimNames, name)
+	}
+	return claimNames, nil
 }
 
 // configurePodHostname sets the pod hostname and subdomain for service discovery

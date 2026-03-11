@@ -391,7 +391,7 @@ func TestBuildResource_MNNVLInjection(t *testing.T) {
 				eventRecorder: record.NewFakeRecorder(10),
 			}
 
-			err := operator.buildResource(logr.Discard(), pclq, pcs, pcsReplica, false, nil)
+			err := operator.buildResource(logr.Discard(), pclq, pcs, pcsReplica, false)
 			require.NoError(t, err)
 
 			// Verify pod-level claims
@@ -442,27 +442,27 @@ func triageContainersByMNNVLClaim(containers []corev1.Container) (withClaim, wit
 	return withClaim, withoutClaim
 }
 
-func TestBuildResource_ResourceClaimNames(t *testing.T) {
+func TestBuildResource_ResourceClaimTemplateNames(t *testing.T) {
 	tests := []struct {
-		description           string
-		resourceClaimNames    []string
-		expectedClaimNames    []string
-		expectedClaimNamesNil bool
+		description                    string
+		templateResourceClaimNames     []string
+		expectedTemplateNamesNil       bool
+		expectedResourceClaimTemplates []string
 	}{
 		{
-			description:           "nil resourceClaimNames results in nil on PodClique spec",
-			resourceClaimNames:    nil,
-			expectedClaimNamesNil: true,
+			description:                "nil template names results in nil on PodClique spec",
+			templateResourceClaimNames: nil,
+			expectedTemplateNamesNil:   true,
 		},
 		{
-			description:        "single claim name is propagated to PodClique spec",
-			resourceClaimNames: []string{"my-pcs-0-worker-gpu-claim"},
-			expectedClaimNames: []string{"my-pcs-0-worker-gpu-claim"},
+			description:                    "single template name is propagated to PodClique spec",
+			templateResourceClaimNames:     []string{"gpu-claim-template"},
+			expectedResourceClaimTemplates: []string{"gpu-claim-template"},
 		},
 		{
-			description:        "multiple claim names are propagated to PodClique spec",
-			resourceClaimNames: []string{"my-pcs-0-worker-gpu-claim", "my-pcs-0-worker-nic-claim"},
-			expectedClaimNames: []string{"my-pcs-0-worker-gpu-claim", "my-pcs-0-worker-nic-claim"},
+			description:                    "multiple template names are propagated to PodClique spec",
+			templateResourceClaimNames:     []string{"gpu-claim-template", "nic-claim-template"},
+			expectedResourceClaimTemplates: []string{"gpu-claim-template", "nic-claim-template"},
 		},
 	}
 
@@ -476,6 +476,7 @@ func TestBuildResource_ResourceClaimNames(t *testing.T) {
 				WithCliqueStartupType(ptr.To(grovecorev1alpha1.CliqueStartupTypeAnyOrder))
 
 			pclqTemplateSpec := testutils.NewPodCliqueTemplateSpecBuilder(pclqTemplateName).Build()
+			pclqTemplateSpec.ResourceClaimTemplateNames = tc.templateResourceClaimNames
 			pcsBuilder.WithPodCliqueTemplateSpec(pclqTemplateSpec)
 			pcs := pcsBuilder.Build()
 
@@ -493,14 +494,15 @@ func TestBuildResource_ResourceClaimNames(t *testing.T) {
 				eventRecorder: record.NewFakeRecorder(10),
 			}
 
-			err := operator.buildResource(logr.Discard(), pclq, pcs, pcsReplica, false, tc.resourceClaimNames)
+			err := operator.buildResource(logr.Discard(), pclq, pcs, pcsReplica, false)
 			require.NoError(t, err)
 
-			if tc.expectedClaimNamesNil {
-				assert.Nil(t, pclq.Spec.ResourceClaimNames)
+			if tc.expectedTemplateNamesNil {
+				assert.Nil(t, pclq.Spec.ResourceClaimTemplateNames)
 			} else {
-				assert.Equal(t, tc.expectedClaimNames, pclq.Spec.ResourceClaimNames)
+				assert.Equal(t, tc.expectedResourceClaimTemplates, pclq.Spec.ResourceClaimTemplateNames)
 			}
+			assert.Nil(t, pclq.Spec.ResourceClaimNames, "PCS-owned PCLQs should not have pre-created ResourceClaimNames")
 		})
 	}
 }

@@ -39,9 +39,19 @@ func (r _resource) createPodCreationTask(logger logr.Logger, pcs *grovecorev1alp
 	return utils.Task{
 		Name: fmt.Sprintf("CreatePod-%s-%d", pclq.Name, taskIndex),
 		Fn: func(ctx context.Context) error {
+			// Create per-replica ResourceClaims for this replica index.
+			perReplicaClaimNames, err := r.createPerReplicaResourceClaims(ctx, logger, pclq, podHostNameIndex)
+			if err != nil {
+				return groveerr.WrapError(err,
+					errCodeCreatePod,
+					component.OperationSync,
+					fmt.Sprintf("failed to create per-replica ResourceClaims for PodClique %v replica %d", pclqObjKey, podHostNameIndex),
+				)
+			}
+			allClaimNames := append(perReplicaClaimNames, pclq.Spec.ResourceClaimNames...)
+
 			pod := &corev1.Pod{}
-			// build the Pod resource
-			if err := r.buildResource(pcs, pclq, podGangName, pod, podHostNameIndex); err != nil {
+			if err := r.buildResource(pcs, pclq, podGangName, pod, podHostNameIndex, allClaimNames); err != nil {
 				return groveerr.WrapError(err,
 					errCodeBuildPodResource,
 					component.OperationSync,

@@ -557,7 +557,7 @@ func TestBuildResource_ResourceClaimInjection(t *testing.T) {
 		},
 		{
 			description:        "single claim is injected into pod and all containers",
-			resourceClaimNames: []string{"test-pcs-0-worker-gpu-claim"},
+			resourceClaimNames: []string{"test-pcs-0-worker-0-gpu-claim"},
 			containers: []corev1.Container{
 				{Name: "main", Image: "test:latest"},
 				{Name: "sidecar", Image: "test:latest"},
@@ -571,7 +571,7 @@ func TestBuildResource_ResourceClaimInjection(t *testing.T) {
 		},
 		{
 			description:        "multiple claims are injected into pod and all containers",
-			resourceClaimNames: []string{"test-pcs-0-worker-gpu-claim", "test-pcs-0-nic-claim"},
+			resourceClaimNames: []string{"test-pcs-0-worker-0-gpu-claim", "test-pcs-0-pcsg-0-shared-nic"},
 			containers: []corev1.Container{
 				{Name: "main", Image: "test:latest"},
 			},
@@ -600,7 +600,6 @@ func TestBuildResource_ResourceClaimInjection(t *testing.T) {
 					},
 				},
 				Spec: grovecorev1alpha1.PodCliqueSpec{
-					ResourceClaimNames: tc.resourceClaimNames,
 					PodSpec: corev1.PodSpec{
 						Containers:     tc.containers,
 						InitContainers: tc.initContainers,
@@ -614,20 +613,18 @@ func TestBuildResource_ResourceClaimInjection(t *testing.T) {
 			}
 
 			pod := &corev1.Pod{}
-			err := operator.buildResource(pcs, pclq, "test-podgang", pod, 0)
+			err := operator.buildResource(pcs, pclq, "test-podgang", pod, 0, tc.resourceClaimNames)
 			require.NoError(t, err)
 
 			assert.Len(t, pod.Spec.ResourceClaims, tc.expectedPodResourceClaims,
 				"pod should have %d PodResourceClaim entries", tc.expectedPodResourceClaims)
 
-			// Verify each PodResourceClaim references the correct ResourceClaim name.
 			for i, podClaim := range pod.Spec.ResourceClaims {
 				require.NotNil(t, podClaim.ResourceClaimName,
 					"PodResourceClaim[%d] should have a ResourceClaimName", i)
 				assert.Equal(t, podClaim.Name, *podClaim.ResourceClaimName)
 			}
 
-			// Verify container-level claim references.
 			for _, container := range pod.Spec.Containers {
 				assert.Len(t, container.Resources.Claims, tc.expectedContainerClaims,
 					"container %s should have %d resource claims", container.Name, tc.expectedContainerClaims)

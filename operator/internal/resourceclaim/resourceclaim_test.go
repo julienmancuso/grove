@@ -42,12 +42,6 @@ func TestGenerateResourceClaimName(t *testing.T) {
 		expectedResult string
 	}{
 		{
-			description:    "PCLQ-scoped claim name",
-			rctName:        "gpu-claim-template",
-			instanceName:   "my-pcs-0-worker",
-			expectedResult: "my-pcs-0-worker-gpu-claim-template",
-		},
-		{
 			description:    "PCSG-scoped claim name",
 			rctName:        "shared-gpu",
 			instanceName:   "my-pcs-0-sga-1",
@@ -58,6 +52,38 @@ func TestGenerateResourceClaimName(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.description, func(t *testing.T) {
 			result := GenerateResourceClaimName(tc.rctName, tc.instanceName)
+			assert.Equal(t, tc.expectedResult, result)
+		})
+	}
+}
+
+func TestGeneratePerReplicaResourceClaimName(t *testing.T) {
+	tests := []struct {
+		description    string
+		rctName        string
+		pclqName       string
+		replicaIndex   int
+		expectedResult string
+	}{
+		{
+			description:    "replica 0",
+			rctName:        "gpu-claim-template",
+			pclqName:       "my-pcs-0-worker",
+			replicaIndex:   0,
+			expectedResult: "my-pcs-0-worker-0-gpu-claim-template",
+		},
+		{
+			description:    "replica 2",
+			rctName:        "nic-template",
+			pclqName:       "my-pcs-0-worker",
+			replicaIndex:   2,
+			expectedResult: "my-pcs-0-worker-2-nic-template",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.description, func(t *testing.T) {
+			result := GeneratePerReplicaResourceClaimName(tc.rctName, tc.pclqName, tc.replicaIndex)
 			assert.Equal(t, tc.expectedResult, result)
 		})
 	}

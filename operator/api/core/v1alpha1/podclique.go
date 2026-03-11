@@ -76,10 +76,17 @@ type PodCliqueSpec struct {
 	// ScaleConfig is the horizontal pod autoscaler configuration for a PodClique.
 	// +optional
 	ScaleConfig *AutoScalingConfig `json:"autoScalingConfig,omitempty"`
-	// ResourceClaimNames is the list of ResourceClaim names to inject into the PodSpec of every pod
-	// in this PodClique instance, enabling resource sharing amongst all pods in the instance.
-	// When a PodClique is managed by a PCS or PCSG, the controller populates this field automatically
-	// from the ResourceClaimTemplateNames and ResourceClaimTemplateConfigs configuration.
+	// ResourceClaimTemplateNames is the list of ResourceClaimTemplate names from which per-replica
+	// ResourceClaims are created. The Pod controller creates one ResourceClaim per template per
+	// PodClique replica and injects it into the PodSpec, enabling resource sharing across all pods
+	// in the same replica. When a PodClique is managed by a PCS or PCSG, the controller copies
+	// this field from PodCliqueTemplateSpec.ResourceClaimTemplateNames.
+	// +optional
+	ResourceClaimTemplateNames []string `json:"resourceClaimTemplateNames,omitempty"`
+	// ResourceClaimNames is the list of pre-created ResourceClaim names to inject into the PodSpec
+	// of every pod in this PodClique, enabling cross-replica resource sharing. For PCSG-managed
+	// PodCliques, the controller populates this field with PCSG-level ResourceClaim names created
+	// from ResourceClaimTemplateConfigs.
 	// +optional
 	ResourceClaimNames []string `json:"resourceClaimNames,omitempty"`
 }

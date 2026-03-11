@@ -1013,25 +1013,41 @@ func triageContainersByMNNVLClaim(containers []corev1.Container) (withClaim, wit
 
 func TestBuildResource_ResourceClaimNames(t *testing.T) {
 	tests := []struct {
-		description           string
-		resourceClaimNames    []string
-		expectedClaimNames    []string
-		expectedClaimNamesNil bool
+		description                string
+		templateClaimTemplateNames []string
+		pcsgLevelClaimNames        []string
+		expectedTemplateNames      []string
+		expectedClaimNames         []string
+		expectedTemplateNamesNil   bool
+		expectedClaimNamesNil      bool
 	}{
 		{
-			description:           "nil resourceClaimNames results in nil on PodClique spec",
-			resourceClaimNames:    nil,
-			expectedClaimNamesNil: true,
+			description:                "nil template and PCSG claims result in nil on PodClique spec",
+			templateClaimTemplateNames: nil,
+			pcsgLevelClaimNames:        nil,
+			expectedTemplateNamesNil:   true,
+			expectedClaimNamesNil:      true,
 		},
 		{
-			description:        "single claim name is propagated to PodClique spec",
-			resourceClaimNames: []string{"test-pcs-0-pcsg-0-worker-gpu-claim"},
-			expectedClaimNames: []string{"test-pcs-0-pcsg-0-worker-gpu-claim"},
+			description:                "template names propagated, no PCSG-level claims",
+			templateClaimTemplateNames: []string{"gpu-claim-template"},
+			pcsgLevelClaimNames:        nil,
+			expectedTemplateNames:      []string{"gpu-claim-template"},
+			expectedClaimNamesNil:      true,
 		},
 		{
-			description:        "multiple claim names are propagated to PodClique spec",
-			resourceClaimNames: []string{"test-pcs-0-pcsg-0-worker-gpu-claim", "test-pcs-0-pcsg-0-nic-claim"},
-			expectedClaimNames: []string{"test-pcs-0-pcsg-0-worker-gpu-claim", "test-pcs-0-pcsg-0-nic-claim"},
+			description:                "PCSG-level claim names propagated, no template names",
+			templateClaimTemplateNames: nil,
+			pcsgLevelClaimNames:        []string{"test-pcs-0-pcsg-0-shared-gpu"},
+			expectedTemplateNamesNil:   true,
+			expectedClaimNames:         []string{"test-pcs-0-pcsg-0-shared-gpu"},
+		},
+		{
+			description:                "both template names and PCSG-level claims propagated",
+			templateClaimTemplateNames: []string{"gpu-claim-template"},
+			pcsgLevelClaimNames:        []string{"test-pcs-0-pcsg-0-shared-gpu", "test-pcs-0-pcsg-0-shared-nic"},
+			expectedTemplateNames:      []string{"gpu-claim-template"},
+			expectedClaimNames:         []string{"test-pcs-0-pcsg-0-shared-gpu", "test-pcs-0-pcsg-0-shared-nic"},
 		},
 	}
 
@@ -1053,7 +1069,8 @@ func TestBuildResource_ResourceClaimNames(t *testing.T) {
 						StartupType: ptr.To(grovecorev1alpha1.CliqueStartupTypeAnyOrder),
 						Cliques: []*grovecorev1alpha1.PodCliqueTemplateSpec{
 							{
-								Name: pclqTemplateName,
+								Name:                       pclqTemplateName,
+								ResourceClaimTemplateNames: tc.templateClaimTemplateNames,
 								Spec: grovecorev1alpha1.PodCliqueSpec{
 									Replicas:     1,
 									MinAvailable: ptr.To(int32(1)),
@@ -1098,8 +1115,14 @@ func TestBuildResource_ResourceClaimNames(t *testing.T) {
 				eventRecorder: &record.FakeRecorder{},
 			}
 
-			err := operator.buildResource(logr.Discard(), pcs, pcsg, pcsgReplicaIndex, pclq, tc.resourceClaimNames)
+			err := operator.buildResource(logr.Discard(), pcs, pcsg, pcsgReplicaIndex, pclq, tc.pcsgLevelClaimNames)
 			require.NoError(t, err)
+
+			if tc.expectedTemplateNamesNil {
+				assert.Nil(t, pclq.Spec.ResourceClaimTemplateNames)
+			} else {
+				assert.Equal(t, tc.expectedTemplateNames, pclq.Spec.ResourceClaimTemplateNames)
+			}
 
 			if tc.expectedClaimNamesNil {
 				assert.Nil(t, pclq.Spec.ResourceClaimNames)
