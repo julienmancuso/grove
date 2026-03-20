@@ -9,7 +9,7 @@
     - [Non-Goals](#non-goals)
 - [Proposal](#proposal)
     - [User Stories (*Optional*)](#user-stories-optional)
-        - [Story 1: Resilient Inference with Per-Replica GPU Sharing](#story-1-resilient-inference-with-per-replica-gpu-sharing)
+        - [Story 1: Disaggregated Inference with Multi-Level GPU Sharing](#story-1-disaggregated-inference-with-multi-level-gpu-sharing)
         - [Story 2: Multi-Stage Training Pipeline with GPU Sharing](#story-2-multi-stage-training-pipeline-with-gpu-sharing)
     - [Limitations/Risks &amp; Mitigations](#limitationsrisks--mitigations)
 - [Design Details](#design-details)
@@ -18,8 +18,6 @@
     - [Common Types](#common-types)
     - [PodClique-Level Resource Sharing](#podclique-level-resource-sharing)
     - [PodCliqueScalingGroup-Level Resource Sharing](#podcliquescalinggroup-level-resource-sharing)
-    - [Multiple Pods Per Replica](#multiple-pods-per-replica)
-    - [Per-Replica Resource Sharing](#per-replica-resource-sharing)
     - [Monitoring](#monitoring)
     - [Dependencies (*Optional*)](#dependencies-optional)
     - [Test Plan](#test-plan)
@@ -45,13 +43,10 @@ creates and manages `ResourceClaim` objects directly — no `ResourceClaimTempla
 enables:
 
 * All pods within a PCLQ instance sharing resources (`PerInstance` scope at PCLQ level),
-* All pods within a single PCLQ replica slot sharing resources (`PerReplica` scope at PCLQ level),
 * All pods across a subset of PCLQs within a PCSG replica sharing resources (`PerReplica` scope at PCSG level), or
 * All pods across all replicas of a PCSG sharing resources (`PerInstance` scope at PCSG level),
 
-while ensuring proper isolation between replicas during scaling operations. Additionally, a `PodsPerReplica` field
-on `PodCliqueSpec` allows creating multiple pods per replica slot (e.g. for crash resilience via shadow pods),
-orthogonal to resource allocation.
+while ensuring proper isolation between replicas during scaling operations.
 
 ## Motivation
 
@@ -74,40 +69,30 @@ across different instances during scaling operations.
 
 ### The Need for Multiple Sharing Scopes
 
-Real-world workloads require resource sharing at different granularities within the Grove hierarchy. Consider a
-disaggregated inference workload with multiple pods per replica for crash resilience:
+Real-world workloads require resource sharing at different granularities within the Grove hierarchy:
 
 - **PCSG `PerReplica`**: An NVSwitch or interconnect resource shared across all PodCliques in a scaling group
   replica (e.g. a leader and its workers sharing a fabric).
 - **PCSG `PerInstance`**: A shared storage or interconnect resource shared across ALL replicas of a scaling group.
 - **PCLQ `PerInstance`**: A set of GPUs shared across all replicas of a PodClique instance (e.g. all worker
   replicas in a scaling group replica share one pool of GPUs).
-- **PCLQ `PerReplica`**: A GPU partition shared between all pods within a single replica slot, enabling
-  zero-downtime recovery without resource reallocation.
 
 These scopes are orthogonal and composable. A single PodClique may participate in multiple scopes simultaneously.
-Without per-replica sharing, extra pods in a replica slot cannot share hardware with the active pod without also
-sharing with every other replica — defeating the isolation needed for independent recovery.
-
-The `PodsPerReplica` field (number of pods per replica slot) is orthogonal to resource allocation. You can have
-multiple pods per replica without any resource sharing, or per-replica resource sharing with a single pod per
-replica.
 
 ### Goals
 
 - Enable users to define resource sharing primitives at multiple levels of Grove hierarchy (PodClique and
   PodCliqueScalingGroup) via a unified `ResourceAllocation` type with a `Scope` enum.
 - Users should be able to limit and scope resource sharing within a subset of a group or within a specific level,
-  e.g. share resources between pods of a PodClique instance (`PerInstance`) vs between pods of a single replica
-  (`PerReplica`), or between a subset of PCLQs within a PCSG instance.
+  e.g. share resources between all pods of a PodClique instance (`PerInstance`), or between a subset of PCLQs
+  within a PCSG replica (`PerReplica`) or across all PCSG replicas (`PerInstance`).
 - Enable users to provide inline `ResourceClaimTemplateSpec` definitions for resource sharing groups.
-- Enable per-replica resource sharing within a PodClique so that pods within a replica slot can share resources
-  while maintaining isolation from other replicas.
-- Enable configuring multiple pods per replica slot (`PodsPerReplica`) orthogonally from resource allocation.
 
 ### Non Goals
 
-_(none at this time)_
+- Per-replica resource sharing within a PodClique (`PerReplica` scope at PCLQ level) — deferred to a future GREP
+  that introduces multiple pods per replica slot.
+- Multiple pods per replica slot (`PodsPerReplica`) — deferred to a future GREP.
 
 ## Proposal
 
@@ -116,70 +101,54 @@ _(none at this time)_
 
 ### User Stories (*Optional*)
 
-#### Story 1: Resilient Inference with Per-Replica GPU Sharing
+#### Story 1: Disaggregated Inference with Multi-Level GPU Sharing
 
 A platform team deploys a disaggregated inference workload with a prefill leader (PCA, 3 replicas) and prefill workers
-(PCB, 2 replicas). Each replica has `podsPerReplica: 2` for crash resilience. All pods in a replica slot are
-identical — the application uses lease-based election to determine which pod is active. The standby pod holds references
-to the same GPU memory so it can take over instantly without reloading model weights.
-
-The workload requires three levels of resource sharing:
+(PCB, 2 replicas) grouped in a scaling group. The workload requires two levels of resource sharing:
 
 1. **PCSG `PerReplica`**: An NVSwitch fabric claim shared across all pods in the scaling group replica
    (leader + workers).
 2. **PCLQ `PerInstance`**: A GPU pool claim shared across all replicas of a PodClique instance — e.g. all 3
-   PCA replicas and their standby pods share one set of GPUs.
-3. **PCLQ `PerReplica`**: A GPU partition claim shared only between all pods within a single replica slot —
-   enabling each replica to recover independently.
+   PCA replicas share one set of GPUs, all 2 PCB replicas share another.
 
-_Challenge_: Without per-replica sharing, a standby pod would either get its own exclusive GPU allocation (wasting
-resources) or share with all replicas (breaking isolation). The `PerReplica` scope fills this gap.
+_Challenge_: Without hierarchical sharing, users must either reference a single `ResourceClaim` (breaking isolation
+across PCSG replicas) or use `ResourceClaimTemplate` in the PodSpec (creating per-pod claims, preventing sharing).
 
 _Solution_: Grove orchestrates resource sharing via a unified `ResourceAllocation` type with scope enum:
 
 - `resourceAllocations` at the PCSG level with `scope: PerReplica` creates one ResourceClaim per PCSG replica,
   injected into all PodCliques in that replica.
 - `resourceAllocations` at the PCLQ level with `scope: PerInstance` creates one ResourceClaim per PCLQ instance,
-  shared across all replicas and all pods in each replica slot.
-- `resourceAllocations` at the PCLQ level with `scope: PerReplica` creates one ResourceClaim per replica slot,
-  shared between all pods in that slot.
+  shared across all replicas.
 
 **Concrete example** of the ResourceClaim distribution:
 
 ```
 PCS:
   cliques:
-    - PCA: replicas=3, podsPerReplica=2,
-           resourceAllocations=[{scope: PerInstance, spec: RCT-N}, {scope: PerReplica, spec: RCT-SHD}]
-    - PCB: replicas=2, podsPerReplica=2,
-           resourceAllocations=[{scope: PerInstance, spec: RCT-P}, {scope: PerReplica, spec: RCT-SHD}]
+    - PCA: replicas=3,
+           resourceAllocations=[{scope: PerInstance, spec: RCT-N}]
+    - PCB: replicas=2,
+           resourceAllocations=[{scope: PerInstance, spec: RCT-P}]
   scalingGroups:
     - SGX: {PCA, PCB}, resourceAllocations=[{scope: PerReplica, spec: RCT-M, cliqueNames: [PCA, PCB]}]
 
 SGX-0: RC-M0   (PCSG PerReplica — shared by ALL pods in SGX-0)
-  SGX-0-PCA: RC-N0   (PCLQ PerInstance — shared by all 6 pods in PCA)
-    {SGX-0-PCA-0-pod-0, SGX-0-PCA-0-pod-1} → RC-SHD-SGX-0-PCA-0   (PCLQ PerReplica)
-    {SGX-0-PCA-1-pod-0, SGX-0-PCA-1-pod-1} → RC-SHD-SGX-0-PCA-1   (PCLQ PerReplica)
-    {SGX-0-PCA-2-pod-0, SGX-0-PCA-2-pod-1} → RC-SHD-SGX-0-PCA-2   (PCLQ PerReplica)
-  SGX-0-PCB: RC-P0   (PCLQ PerInstance — shared by all 4 pods in PCB)
-    {SGX-0-PCB-0-pod-0, SGX-0-PCB-0-pod-1} → RC-SHD-SGX-0-PCB-0   (PCLQ PerReplica)
-    {SGX-0-PCB-1-pod-0, SGX-0-PCB-1-pod-1} → RC-SHD-SGX-0-PCB-1   (PCLQ PerReplica)
+  SGX-0-PCA: RC-N0   (PCLQ PerInstance — shared by all 3 PCA pods)
+    SGX-0-PCA-0, SGX-0-PCA-1, SGX-0-PCA-2
+  SGX-0-PCB: RC-P0   (PCLQ PerInstance — shared by all 2 PCB pods)
+    SGX-0-PCB-0, SGX-0-PCB-1
 
 SGX-1: RC-M1
   SGX-1-PCA: RC-N1
-    {SGX-1-PCA-0-pod-0, SGX-1-PCA-0-pod-1} → RC-SHD-SGX-1-PCA-0
-    {SGX-1-PCA-1-pod-0, SGX-1-PCA-1-pod-1} → RC-SHD-SGX-1-PCA-1
-    {SGX-1-PCA-2-pod-0, SGX-1-PCA-2-pod-1} → RC-SHD-SGX-1-PCA-2
+    SGX-1-PCA-0, SGX-1-PCA-1, SGX-1-PCA-2
   SGX-1-PCB: RC-P1
-    {SGX-1-PCB-0-pod-0, SGX-1-PCB-0-pod-1} → RC-SHD-SGX-1-PCB-0
-    {SGX-1-PCB-1-pod-0, SGX-1-PCB-1-pod-1} → RC-SHD-SGX-1-PCB-1
+    SGX-1-PCB-0, SGX-1-PCB-1
 ```
 
 In this example:
-- Pod naming: `{PCLQ-name}-{replica-index}-pod-{pod-index}` — all pods use the `-pod-` delimiter when `podsPerReplica > 1`
 - RC-M0/RC-M1 are PCSG `PerReplica` claims: one per PCSG replica, shared by every pod in that replica
-- RC-N0/RC-P0 are PCLQ `PerInstance` claims: one per PCLQ instance, shared by all replicas and pods
-- RC-SHD-* are PCLQ `PerReplica` claims: one per replica slot, shared between all pods in that slot
+- RC-N0/RC-P0 are PCLQ `PerInstance` claims: one per PCLQ instance, shared by all replicas
 
 #### Story 2: Multi-Stage Training Pipeline with GPU Sharing
 
@@ -214,31 +183,22 @@ scope and the allocation index (position in the `ResourceAllocations` list).
 | Level + Scope | RC Name Format |
 |---|---|
 | PCLQ `PerInstance` | `<pclq.Name>-rct-<allocIndex>` |
-| PCLQ `PerReplica` | `<pclq.Name>-<replicaIndex>-rct-<allocIndex>` |
 | PCSG `PerReplica` | `<pcsg.Name>-<pcsgReplicaIndex>-rct-<allocIndex>` |
 | PCSG `PerInstance` | `<pcsg.Name>-rct-<allocIndex>` |
 
-The `rct-<index>` suffix identifies the position of the entry in the `ResourceAllocations` list. For PCLQ
-`PerReplica`, the replica index is inserted before the suffix to produce one RC per replica.
+The `rct-<index>` suffix identifies the position of the entry in the `ResourceAllocations` list.
 
-**Concrete example** — PCS `my-svc` (replica 0), PCSG `mi` (replicas: 2), cliques: `leader` (replicas: 2,
-podsPerReplica: 2, PCLQ PerReplica alloc at index 0), `worker` (replicas: 3, PCLQ PerInstance alloc at index 0),
-PCSG PerReplica alloc at index 0:
+**Concrete example** — PCS `my-svc` (replica 0), PCSG `mi` (replicas: 2), cliques: `worker` (replicas: 3,
+PCLQ PerInstance alloc at index 0), PCSG PerReplica alloc at index 0:
 
 ```
 PCSG PerReplica ResourceClaims (owned by PCSG):
   my-svc-0-mi-0-rct-0        → shared by ALL pods in PCSG replica 0
   my-svc-0-mi-1-rct-0        → shared by ALL pods in PCSG replica 1
 
-PCLQ PerInstance ResourceClaims (owned by PCLQ):
+PCLQ PerInstance ResourceClaims (owned by PCSG):
   my-svc-0-mi-0-worker-rct-0 → shared by all worker pods in PCSG replica 0
   my-svc-0-mi-1-worker-rct-0 → shared by all worker pods in PCSG replica 1
-
-PCLQ PerReplica ResourceClaims (owned by PCLQ, explicit deletion on scale-down):
-  my-svc-0-mi-0-leader-0-rct-0 → shared by leader-0-pod-0, leader-0-pod-1
-  my-svc-0-mi-0-leader-1-rct-0 → shared by leader-1-pod-0, leader-1-pod-1
-  my-svc-0-mi-1-leader-0-rct-0 → shared by leader-0-pod-0, leader-0-pod-1
-  my-svc-0-mi-1-leader-1-rct-0 → shared by leader-1-pod-0, leader-1-pod-1
 ```
 
 **For standalone PodCliques** (not in a PCSG), the PCLQ resource name is `<pcs>-<pcsIndex>-<pclqTemplate>`,
@@ -246,11 +206,7 @@ so the pattern is the same:
 
 ```
 PCLQ PerInstance:
-  my-svc-0-frontend-rct-0              → shared by all frontend pods
-
-PCLQ PerReplica:
-  my-svc-0-frontend-0-rct-1           → shared by frontend-0-pod-0, frontend-0-pod-1
-  my-svc-0-frontend-1-rct-1           → shared by frontend-1-pod-0, frontend-1-pod-1
+  my-svc-0-frontend-rct-0    → shared by all frontend pods
 ```
 
 ### Owner References
@@ -260,9 +216,9 @@ ResourceClaim ownership determines garbage collection behavior:
 | Level + Scope | Owner | Rationale |
 |---|---|---|
 | PCSG `PerInstance` | PCSG object | Claim spans all replicas of the PCSG; GC'd when PCSG is deleted |
-| PCSG `PerReplica` | PCSG object | Claim spans all PCLQs in a PCSG replica; GC'd when PCSG is deleted |
-| PCLQ `PerInstance` | PCLQ object | Claim is per-PCLQ instance; GC'd when PCLQ is deleted |
-| PCLQ `PerReplica` | PCLQ object | Created by the pod controller but logically belongs to the PCLQ; on scale-down, the controller must **explicitly delete** per-replica claims for removed replica slots (Kubernetes GC only fires on PCLQ deletion, not on replica reduction) |
+| PCSG `PerReplica` | PCSG object | Claim spans all PCLQs in a PCSG replica; GC'd when PCSG is deleted; on scale-down, the controller must **explicitly delete** per-replica claims for removed replica indices |
+| PCLQ `PerInstance` (standalone) | PCS object | Claim is per-PCLQ instance; GC'd when PCS is deleted |
+| PCLQ `PerInstance` (PCSG-owned) | PCSG object | Claim is per-PCLQ instance; GC'd when PCSG is deleted |
 
 ### Common Types
 
@@ -308,6 +264,9 @@ from these specs — no intermediate `ResourceClaimTemplate` objects are created
 See [ResourceClaim Naming Convention](#resourceclaim-naming-convention) for the deterministic naming scheme and
 [Owner References](#owner-references) for garbage collection semantics.
 
+**Note:** At the PCLQ level, only `PerInstance` scope is currently supported. `PerReplica` at the PCLQ level
+will be introduced in a future GREP alongside support for multiple pods per replica slot.
+
 ### PodClique-Level Resource Sharing
 
 **API** 
@@ -320,9 +279,10 @@ type PodCliqueTemplateSpec struct {
 	Name string `json:"name"`
 	...
 	// ResourceAllocations defines shared ResourceClaims for this PodClique. Each entry
-	// creates ResourceClaims at the granularity specified by its Scope:
-	//   - PerInstance: one RC per PCLQ instance, shared by all replicas and pods
-	//   - PerReplica: one RC per replica, shared by all pods within the replica
+	// creates one ResourceClaim per PCLQ instance (PerInstance scope), shared by all
+	// replica pods.
+	// NOTE: Only PerInstance scope is supported at the PCLQ level. PerReplica will be
+	// added in a future GREP alongside PodsPerReplica support.
 	// NOTE: This is not the same as adding ResourceClaimTemplate inside the
 	// Spec.PodSpec.ResourceClaims[x].ResourceClaimTemplateName in the PodClique since that will
 	// create a unique ResourceClaim for each pod in the PodClique.
@@ -335,12 +295,11 @@ type PodCliqueTemplateSpec struct {
 ```
 
 To enable resource sharing among `Pod`s within a `PodClique`, a new field `ResourceAllocations` will be added
-to `PodCliqueTemplateSpec`. Each entry has a `Scope` (`PerInstance` or `PerReplica`) and a single inline
-`ResourceClaimTemplateSpec`. All specs must be in the same namespace as the `PodCliqueSet`.
+to `PodCliqueTemplateSpec`. Each entry has a `Scope` (only `PerInstance` is supported at this level) and a single
+inline `ResourceClaimTemplateSpec`. All specs must be in the same namespace as the `PodCliqueSet`.
 
-The PodClique reconciler will process `PerInstance` entries and create one `ResourceClaim` per entry.
-`PerReplica` entries are passed to the pod controller, which creates one `ResourceClaim` per replica per entry.
-All resource claims are then injected into the `PodSpec`.
+The parent controller (PCS or PCSG) will process `PerInstance` entries, create one `ResourceClaim` per entry,
+and inject the claim references into the PCLQ's `PodSpec`.
 
 **Example:**
 
@@ -516,146 +475,6 @@ In this example:
 - Each of the 3 experiments maintains isolation (different ResourceClaims, different GPU sets)
 
 
-
-### Multiple Pods Per Replica
-
-A `PodsPerReplica` field on `PodCliqueSpec` allows creating multiple pods per replica slot, orthogonal to resource
-allocation. The primary use case is crash resilience (shadow pods): all pods in a replica slot are identical, and the
-application uses lease-based election to determine which pod is active. When the active pod fails, another pod in the
-same slot acquires the lease and takes over instantly.
-
-**API**
-
-```go
-type PodCliqueSpec struct {
-	...
-	// PodsPerReplica is the number of pods to create per replica slot.
-	// Default is 1 (current behavior). When > 1, pods use two-dimensional hostnames:
-	// <pclq-name>-<replicaIndex>-pod-<podIndex>
-	// All pods in a replica slot are identical — active-pod election is handled at the
-	// application level via leases.
-	// +optional
-	// +kubebuilder:default=1
-	PodsPerReplica *int32 `json:"podsPerReplica,omitempty"`
-}
-```
-
-#### Pod Naming with Multiple Pods Per Replica
-
-When `PodsPerReplica > 1`, pods use semantic hostnames encoding both the replica index and pod index:
-
-- **PodsPerReplica = 1** (default): `<pclq-name>-<replicaIndex>` (unchanged)
-- **PodsPerReplica > 1**: `<pclq-name>-<replicaIndex>-pod-<podIndex>`
-
-All pods in a replica slot get the `-pod-` suffix. Pod slot index 0 is the first pod, pod index 1 is the
-second, etc.
-
-**Example** — `replicas: 2, podsPerReplica: 3` (3 pods per replica, 6 total):
-
-```
-pclq-0-pod-0  replica-index=0, pod-index=0
-pclq-0-pod-1  replica-index=0, pod-index=1
-pclq-0-pod-2  replica-index=0, pod-index=2
-pclq-1-pod-0  replica-index=1, pod-index=0
-pclq-1-pod-1  replica-index=1, pod-index=1
-pclq-1-pod-2  replica-index=1, pod-index=2
-```
-
-#### Environment Variables
-
-Grove injects the following env vars into all pods when `PodsPerReplica > 1`:
-
-- `GROVE_REPLICA_INDEX` — the replica slot index
-- `GROVE_POD_INDEX` — the index within the replica slot (0, 1, ..., PodsPerReplica-1)
-- `GROVE_PODS_PER_REPLICA` — total pods per replica slot
-
-These enable applications to construct peer hostnames via simple env var interpolation (no arithmetic):
-
-```
-leader_hostname = "<leader-pclq>-$(GROVE_REPLICA_INDEX)-pod-$(GROVE_POD_INDEX).$(GROVE_HEADLESS_SERVICE)"
-```
-
-`GROVE_PCLQ_POD_INDEX` (existing env var) equals `GROVE_REPLICA_INDEX` when `PodsPerReplica > 1`.
-
-#### Multi-Node + Multiple Pods Per Replica
-
-Within a PCSG replica, each pod maps 1:1 across cliques: pod K of every worker connects to pod K of
-the leader. This allows all pods to pre-establish NCCL connections, making failover instant (no NCCL re-initialization).
-
-**Note:** Dynamo currently hardcodes `-0` as the leader hostname. It will need updating to use the env var
-interpolation above. This is a Dynamo-side change, not a Grove change.
-
-### Per-Replica Resource Sharing
-
-When `PodsPerReplica > 1`, all pods within a single replica slot may need to share a ResourceClaim that is isolated
-from other replicas. This is achieved by using `PerReplica` scope in the PCLQ-level `ResourceAllocations`:
-
-Per-replica ResourceClaims are owned by the PodClique instance. This ensures they survive individual pod re-creations
-(important for crash recovery) but are garbage-collected when the PodClique is deleted. On scale-down, the controller
-explicitly deletes per-replica claims for removed replica slots.
-
-**Example:**
-
-The following example shows a `PodCliqueSet` with multiple pods per replica and both `PerInstance` and `PerReplica`
-resource sharing. The `PerInstance` claim is shared across all replicas, while the `PerReplica` claim is shared only
-between all pods in the same replica slot.
-
-```yaml
-apiVersion: grove.io/v1alpha1
-kind: PodCliqueSet
-metadata:
-  name: inference-with-shadows
-  namespace: default
-spec:
-  replicas: 2
-  template:
-    cliques:
-      - name: prefill-worker
-        resourceAllocations:
-          # PerInstance: one claim per PCLQ instance, shared across all replicas + pods
-          - scope: PerInstance
-            spec:
-              spec:
-                devices:
-                  requests:
-                    - name: gpu-pool
-                      deviceClassName: gpu.nvidia.com
-                      count: 8
-          # PerReplica: one claim per replica slot, shared between all pods in the slot
-          - scope: PerReplica
-            spec:
-              spec:
-                devices:
-                  requests:
-                    - name: gpu-partition
-                      deviceClassName: gpu.nvidia.com
-                      count: 1
-        spec:
-          roleName: worker
-          replicas: 3
-          podsPerReplica: 2
-          podSpec:
-            containers:
-              - name: worker
-                image: nvidia/cuda:12.0-runtime
-                command: ["/bin/sh", "-c"]
-                args:
-                  - |
-                    echo "Worker pod: $POD_NAME"
-                    sleep infinity
-                resources:
-                  requests:
-                    cpu: "2"
-                    memory: "4Gi"
-            restartPolicy: Always
-```
-
-In this example:
-- 2 PCS replicas create 2 PCLQ instances, each with its own `PerInstance` GPU pool ResourceClaim
-- Within each PCLQ instance, 3 replicas x 2 pods = 6 pods share the `PerInstance` GPU pool
-- Each replica slot's 2 pods additionally share a `PerReplica` GPU partition
-- Pod hostnames: `prefill-worker-0-pod-0`, `prefill-worker-0-pod-1`, `prefill-worker-1-pod-0`, etc.
-- If a pod in a replica slot fails, another pod in the same slot already has access to the same GPU partition
 
 ### Monitoring
 
