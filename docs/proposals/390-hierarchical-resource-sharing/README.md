@@ -1,19 +1,19 @@
 # Hierarchical Resource Sharing
 
 <!-- toc -->
-
-- [Summary](#summary)
-- [Motivation](#motivation)
+  - [Summary](#summary)
+  - [Motivation](#motivation)
     - [The Need for Multiple Sharing Scopes](#the-need-for-multiple-sharing-scopes)
     - [Goals](#goals)
-- [Proposal](#proposal)
+  - [Proposal](#proposal)
     - [User Stories](#user-stories)
-        - [Story 1: Disaggregated Inference with Multi-Level GPU Sharing](#story-1-disaggregated-inference-with-multi-level-gpu-sharing)
-        - [Story 2: Multi-Stage Training Pipeline with GPU Sharing](#story-2-multi-stage-training-pipeline-with-gpu-sharing)
+      - [Story 1: Disaggregated Inference with Multi-Level GPU Sharing](#story-1-disaggregated-inference-with-multi-level-gpu-sharing)
+      - [Story 2: Multi-Stage Training Pipeline with GPU Sharing](#story-2-multi-stage-training-pipeline-with-gpu-sharing)
     - [Limitations/Risks &amp; Mitigations](#limitationsrisks--mitigations)
-- [Design Details](#design-details)
+  - [Design Details](#design-details)
     - [Common Types](#common-types)
-    - [PodCliqueSet-Level Resource Sharing](#podcliqueset-level-resource-sharing)
+  - [count: 8](#count-8)
+- [--- PodCliqueSet using both internal and external references ---](#----podcliqueset-using-both-internal-and-external-references----)
     - [PodClique-Level Resource Sharing](#podclique-level-resource-sharing)
     - [PodCliqueScalingGroup-Level Resource Sharing](#podcliquescalinggroup-level-resource-sharing)
     - [ResourceClaim Naming Convention](#resourceclaim-naming-convention)
@@ -22,10 +22,9 @@
     - [Dependencies](#dependencies)
     - [Test Plan](#test-plan)
     - [Graduation Criteria](#graduation-criteria)
-- [Implementation History](#implementation-history)
-- [Alternatives](#alternatives)
-- [Appendix](#appendix)
-
+  - [Implementation History](#implementation-history)
+  - [Alternatives](#alternatives)
+  - [Appendix](#appendix)
 <!-- /toc -->
 
 ## Summary
