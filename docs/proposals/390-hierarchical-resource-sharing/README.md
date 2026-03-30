@@ -205,8 +205,8 @@ const (
 type ResourceClaimTemplateConfig struct {
 	// Name is a unique identifier for this template within the PodCliqueSet.
 	Name string `json:"name"`
-	// Spec is the ResourceClaimTemplate spec.
-	Spec resourcev1.ResourceClaimTemplateSpec `json:"spec"`
+	// Template is the ResourceClaimTemplate spec.
+	Template resourcev1.ResourceClaimTemplateSpec `json:"template"`
 }
 
 // ResourceClaimTemplateRef references a ResourceClaimTemplateSpec and defines the
