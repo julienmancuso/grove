@@ -39,16 +39,16 @@ group of pods at multiple levels of the Grove hierarchy by leveraging
 offered via Dynamic Resource Allocation (DRA) in Kubernetes. Users declare `ResourceClaimTemplateSpec` definitions
 either as named templates at the PCS level (`ResourceClaimTemplateConfig`) or reference pre-existing Kubernetes
 `ResourceClaimTemplate` objects. Each `resourceSharing` entry references a template by name via a
-`ResourceClaimTemplateRef` with a `Scope` enum (`Shared` or `PerReplica`). External references are
+`ResourceClaimTemplateRef` with a `Scope` enum (`AllReplicas` or `PerReplica`). External references are
 indicated by setting `isExternalRef: true`. Grove creates and manages `ResourceClaim` objects directly
 from the resolved specs. A
 `resourceSharing` field is available at three levels of the hierarchy:
 
 * **PodCliqueSet level** — resources shared across an entire PCS or per PCS replica,
-  with an optional `childrenNames` filter to target specific PodCliques and/or PodCliqueScalingGroups.
+  with an optional `filter` to target specific PodCliques and/or PodCliqueScalingGroups.
 * **PodClique level** — resources shared across an entire PCLQ or per PCLQ replica.
 * **PodCliqueScalingGroup level** — resources shared across an entire PCSG or per PCSG replica,
-  with an optional `childrenNames` filter to target specific PodCliques.
+  with an optional `filter` to target specific PodCliques.
 
 This design ensures proper isolation between replicas during scaling operations and enables composable,
 multi-level resource sharing.
@@ -76,14 +76,14 @@ operations.
 
 Real-world workloads require resource sharing at different granularities within the Grove hierarchy:
 
-- **PCS `Shared`**: A resource shared across ALL pods in ALL replicas of an entire PodCliqueSet
+- **PCS `AllReplicas`**: A resource shared across ALL pods in ALL replicas of an entire PodCliqueSet
   (e.g. a shared storage pool).
 - **PCS `PerReplica`**: A resource shared across ALL pods within a single PCS replica.
-- **PCSG `Shared`**: A shared resource across ALL replicas of a scaling group instance
+- **PCSG `AllReplicas`**: A shared resource across ALL replicas of a scaling group instance
   (e.g. a shared storage or interconnect resource).
 - **PCSG `PerReplica`**: An NVSwitch or interconnect resource shared across all PodCliques in a scaling group
   replica (e.g. a leader and its workers sharing a fabric).
-- **PCLQ `Shared`**: A set of GPUs shared across all replicas of a PodClique
+- **PCLQ `AllReplicas`**: A set of GPUs shared across all replicas of a PodClique
   (e.g. all worker replicas in a scaling group replica share one pool of GPUs).
 - **PCLQ `PerReplica`**: A resource dedicated to a single PCLQ replica.
 
@@ -95,10 +95,10 @@ These scopes are orthogonal and composable. A single PodClique may participate i
   (PodCliqueSet, PodClique, and PodCliqueScalingGroup) via `ResourceClaimTemplateRef` entries with
   a `Scope` enum.
 - Users should be able to scope resource sharing at the desired granularity, e.g. share resources
-  between all pods of a PodClique (`Shared`), per PCLQ replica (`PerReplica`), between
-  a subset of PCLQs within a PCSG replica (`PerReplica` with `childrenNames`), across all PCSG replicas
-  (`Shared`), or across an entire PCS or per PCS replica — with optional `childrenNames`
-  filters to target specific children at any level.
+  between all pods of a PodClique (`AllReplicas`), per PCLQ replica (`PerReplica`), between
+  a subset of PCLQs within a PCSG replica (`PerReplica` with `filter`), across all PCSG replicas
+  (`AllReplicas`), or across an entire PCS or per PCS replica — with optional `filter`
+  to target specific children at any level.
 - Enable users to declare `ResourceClaimTemplateSpec` definitions as named templates at the PCS level
   (internal references) or reference pre-existing Kubernetes `ResourceClaimTemplate` objects (external
   references), avoiding spec duplication across the hierarchy.
@@ -114,7 +114,7 @@ A platform team deploys a disaggregated inference workload with a prefill leader
 
 1. **PCSG `PerReplica`**: An NVSwitch fabric claim shared across all pods in the scaling group replica
    (leader + workers).
-2. **PCLQ `Shared`**: A GPU pool claim shared across all replicas of a PodClique — e.g. all 3
+2. **PCLQ `AllReplicas`**: A GPU pool claim shared across all replicas of a PodClique — e.g. all 3
    PCA replicas share one set of GPUs, all 2 PCB replicas share another.
 
 _Challenge_: Without hierarchical sharing, users must either reference a single `ResourceClaim` (breaking isolation
@@ -124,7 +124,7 @@ _Solution_: Grove orchestrates resource sharing via `ResourceClaimTemplateRef` e
 
 - `resourceSharing` at the PCSG level with `scope: PerReplica` creates one ResourceClaim per PCSG replica,
   injected into all PodCliques in that replica.
-- `resourceSharing` at the PCLQ level with `scope: Shared` creates one ResourceClaim per PCLQ,
+- `resourceSharing` at the PCLQ level with `scope: AllReplicas` creates one ResourceClaim per PCLQ,
   shared across all replicas.
 
 **Concrete example** of the ResourceClaim distribution for a PCS named `disagg` with 2 replicas,
@@ -133,72 +133,73 @@ demonstrating all three levels with different scopes:
 ```
 PCS "disagg" (replicas: 2):
   resourceClaimTemplates:
-    - name: shared-store,  template: {shared storage device}
+    - name: storage1,      template: {shared storage device A}
+    - name: storage2,      template: {shared storage device B}
     - name: h100,          template: {4 GPUs, nvidia.com}
     - name: b200,          template: {2 GPUs, nvidia.com}
     - name: nvswitch,      template: {1 NVSwitch fabric, nvswitch.nvidia.com}
   resourceSharing:
-    - {name: shared-store, scope: Shared}                          # PCS Shared (alloc 0)
-    - {name: shared-store, scope: PerReplica}                      # PCS PerReplica (alloc 1)
+    - {name: storage1, scope: AllReplicas}                          # PCS AllReplicas
+    - {name: storage2, scope: PerReplica}                           # PCS PerReplica
   cliques:
     - pca: replicas=3,
-           resourceSharing=[{name: h100, scope: Shared}]            # PCLQ Shared (alloc 0)
+           resourceSharing=[{name: h100, scope: AllReplicas}]        # PCLQ AllReplicas
     - pcb: replicas=2,
-           resourceSharing=[{name: b200, scope: Shared}]            # PCLQ Shared (alloc 0)
+           resourceSharing=[{name: b200, scope: AllReplicas}]        # PCLQ AllReplicas
   scalingGroups:
     - sgx: cliqueNames=[pca, pcb], replicas=2,
-           resourceSharing=[{name: nvswitch, scope: PerReplica}]   # PCSG PerReplica (alloc 0)
+           resourceSharing=[{name: nvswitch, scope: PerReplica}]   # PCSG PerReplica
 ```
 
 Grove creates the following ResourceClaim objects:
 
 ```
-PCS Shared (1 for the entire PCS):
-  disagg-shr-0                        → shared by ALL pods across ALL PCS replicas
+PCS AllReplicas (1 for the entire PCS):
+  disagg-all-storage1                 → shared by ALL pods across ALL PCS replicas
 
 PCS PerReplica (1 per PCS replica):
-  disagg-0-rpl-1                      → shared by ALL pods in PCS replica 0
-  disagg-1-rpl-1                      → shared by ALL pods in PCS replica 1
+  disagg-0-storage2                   → shared by ALL pods in PCS replica 0
+  disagg-1-storage2                   → shared by ALL pods in PCS replica 1
 
 PCSG PerReplica (1 per PCSG replica, per PCS replica):
-  disagg-0-sgx-0-rpl-0               → shared by ALL pods in PCSG replica 0, PCS replica 0
-  disagg-0-sgx-1-rpl-0               → shared by ALL pods in PCSG replica 1, PCS replica 0
-  disagg-1-sgx-0-rpl-0               → shared by ALL pods in PCSG replica 0, PCS replica 1
-  disagg-1-sgx-1-rpl-0               → shared by ALL pods in PCSG replica 1, PCS replica 1
+  disagg-0-sgx-0-nvswitch             → shared by ALL pods in PCSG replica 0, PCS replica 0
+  disagg-0-sgx-1-nvswitch             → shared by ALL pods in PCSG replica 1, PCS replica 0
+  disagg-1-sgx-0-nvswitch             → shared by ALL pods in PCSG replica 0, PCS replica 1
+  disagg-1-sgx-1-nvswitch             → shared by ALL pods in PCSG replica 1, PCS replica 1
 
-PCLQ Shared (1 per PCLQ instance):
-  disagg-0-sgx-0-pca-shr-0           → shared by all 3 pca pods in PCSG rep 0, PCS rep 0
-  disagg-0-sgx-1-pca-shr-0           → shared by all 3 pca pods in PCSG rep 1, PCS rep 0
-  disagg-0-sgx-0-pcb-shr-0           → shared by all 2 pcb pods in PCSG rep 0, PCS rep 0
-  disagg-0-sgx-1-pcb-shr-0           → shared by all 2 pcb pods in PCSG rep 1, PCS rep 0
-  disagg-1-sgx-0-pca-shr-0           → (same pattern for PCS replica 1)
-  disagg-1-sgx-1-pca-shr-0
-  disagg-1-sgx-0-pcb-shr-0
-  disagg-1-sgx-1-pcb-shr-0
+PCLQ AllReplicas (1 per PCLQ instance):
+  disagg-0-sgx-0-pca-all-h100        → shared by all 3 pca pods in PCSG rep 0, PCS rep 0
+  disagg-0-sgx-1-pca-all-h100        → shared by all 3 pca pods in PCSG rep 1, PCS rep 0
+  disagg-0-sgx-0-pcb-all-b200        → shared by all 2 pcb pods in PCSG rep 0, PCS rep 0
+  disagg-0-sgx-1-pcb-all-b200        → shared by all 2 pcb pods in PCSG rep 1, PCS rep 0
+  disagg-1-sgx-0-pca-all-h100        → (same pattern for PCS replica 1)
+  disagg-1-sgx-1-pca-all-h100
+  disagg-1-sgx-0-pcb-all-b200
+  disagg-1-sgx-1-pcb-all-b200
 ```
 
 The resulting ResourceClaim assignment per pod (showing PCS replica 0 only for brevity — PCS replica 1 follows the same pattern):
 
-| Pod | PCS Shared | PCS PerReplica | PCSG PerReplica | PCLQ Shared |
+| Pod | PCS AllReplicas | PCS PerReplica | PCSG PerReplica | PCLQ AllReplicas |
 |---|---|---|---|---|
-| disagg-0-sgx-0-pca-0 | disagg-shr-0 | disagg-0-rpl-1 | disagg-0-sgx-0-rpl-0 | disagg-0-sgx-0-pca-shr-0 |
-| disagg-0-sgx-0-pca-1 | disagg-shr-0 | disagg-0-rpl-1 | disagg-0-sgx-0-rpl-0 | disagg-0-sgx-0-pca-shr-0 |
-| disagg-0-sgx-0-pca-2 | disagg-shr-0 | disagg-0-rpl-1 | disagg-0-sgx-0-rpl-0 | disagg-0-sgx-0-pca-shr-0 |
-| disagg-0-sgx-0-pcb-0 | disagg-shr-0 | disagg-0-rpl-1 | disagg-0-sgx-0-rpl-0 | disagg-0-sgx-0-pcb-shr-0 |
-| disagg-0-sgx-0-pcb-1 | disagg-shr-0 | disagg-0-rpl-1 | disagg-0-sgx-0-rpl-0 | disagg-0-sgx-0-pcb-shr-0 |
-| disagg-0-sgx-1-pca-0 | disagg-shr-0 | disagg-0-rpl-1 | disagg-0-sgx-1-rpl-0 | disagg-0-sgx-1-pca-shr-0 |
-| disagg-0-sgx-1-pca-1 | disagg-shr-0 | disagg-0-rpl-1 | disagg-0-sgx-1-rpl-0 | disagg-0-sgx-1-pca-shr-0 |
-| disagg-0-sgx-1-pca-2 | disagg-shr-0 | disagg-0-rpl-1 | disagg-0-sgx-1-rpl-0 | disagg-0-sgx-1-pca-shr-0 |
-| disagg-0-sgx-1-pcb-0 | disagg-shr-0 | disagg-0-rpl-1 | disagg-0-sgx-1-rpl-0 | disagg-0-sgx-1-pcb-shr-0 |
-| disagg-0-sgx-1-pcb-1 | disagg-shr-0 | disagg-0-rpl-1 | disagg-0-sgx-1-rpl-0 | disagg-0-sgx-1-pcb-shr-0 |
+| disagg-0-sgx-0-pca-0 | disagg-all-storage1 | disagg-0-storage2 | disagg-0-sgx-0-nvswitch | disagg-0-sgx-0-pca-all-h100 |
+| disagg-0-sgx-0-pca-1 | disagg-all-storage1 | disagg-0-storage2 | disagg-0-sgx-0-nvswitch | disagg-0-sgx-0-pca-all-h100 |
+| disagg-0-sgx-0-pca-2 | disagg-all-storage1 | disagg-0-storage2 | disagg-0-sgx-0-nvswitch | disagg-0-sgx-0-pca-all-h100 |
+| disagg-0-sgx-0-pcb-0 | disagg-all-storage1 | disagg-0-storage2 | disagg-0-sgx-0-nvswitch | disagg-0-sgx-0-pcb-all-b200 |
+| disagg-0-sgx-0-pcb-1 | disagg-all-storage1 | disagg-0-storage2 | disagg-0-sgx-0-nvswitch | disagg-0-sgx-0-pcb-all-b200 |
+| disagg-0-sgx-1-pca-0 | disagg-all-storage1 | disagg-0-storage2 | disagg-0-sgx-1-nvswitch | disagg-0-sgx-1-pca-all-h100 |
+| disagg-0-sgx-1-pca-1 | disagg-all-storage1 | disagg-0-storage2 | disagg-0-sgx-1-nvswitch | disagg-0-sgx-1-pca-all-h100 |
+| disagg-0-sgx-1-pca-2 | disagg-all-storage1 | disagg-0-storage2 | disagg-0-sgx-1-nvswitch | disagg-0-sgx-1-pca-all-h100 |
+| disagg-0-sgx-1-pcb-0 | disagg-all-storage1 | disagg-0-storage2 | disagg-0-sgx-1-nvswitch | disagg-0-sgx-1-pcb-all-b200 |
+| disagg-0-sgx-1-pcb-1 | disagg-all-storage1 | disagg-0-storage2 | disagg-0-sgx-1-nvswitch | disagg-0-sgx-1-pcb-all-b200 |
 
 In this example:
-- `disagg-shr-0` is the PCS `Shared` claim: one for the entire PCS, shared by all 20 pods
-- `disagg-{0,1}-rpl-1` are PCS `PerReplica` claims: one per PCS replica, shared by all 10 pods in that replica
-- `disagg-{0,1}-sgx-{0,1}-rpl-0` are PCSG `PerReplica` claims: one per PCSG replica, shared by all 5 pods (pca + pcb) in that replica
-- `disagg-{0,1}-sgx-{0,1}-pca-shr-0` are PCLQ `Shared` claims: one per pca instance, shared by all 3 pca pods
-- `disagg-{0,1}-sgx-{0,1}-pcb-shr-0` are PCLQ `Shared` claims: one per pcb instance, shared by all 2 pcb pods
-- Total ResourceClaims: 1 (PCS Shared) + 2 (PCS PerReplica) + 4 (PCSG PerReplica) + 8 (PCLQ Shared) = 15
+- `disagg-all-storage1` is the PCS `AllReplicas` claim: one for the entire PCS, shared by all 20 pods
+- `disagg-{0,1}-storage2` are PCS `PerReplica` claims: one per PCS replica, shared by all 10 pods in that replica
+- `disagg-{0,1}-sgx-{0,1}-nvswitch` are PCSG `PerReplica` claims: one per PCSG replica, shared by all 5 pods (pca + pcb) in that replica
+- `disagg-{0,1}-sgx-{0,1}-pca-all-h100` are PCLQ `AllReplicas` claims: one per pca instance, shared by all 3 pca pods
+- `disagg-{0,1}-sgx-{0,1}-pcb-all-b200` are PCLQ `AllReplicas` claims: one per pcb instance, shared by all 2 pcb pods
+- Total ResourceClaims: 1 (PCS AllReplicas) + 2 (PCS PerReplica) + 4 (PCSG PerReplica) + 8 (PCLQ AllReplicas) = 15
 
 #### Story 2: Multi-Stage Training Pipeline with GPU Sharing
 
@@ -208,7 +209,7 @@ In such a distributed training pipeline, data preprocessing pods load and transf
 
 _Challenge_: Each experiment (PCSG instance) needs its own isolated set of GPUs, but within an experiment, both preprocessing and training pods should share the same GPU devices for efficient data transfer and memory utilization. Standard GPU allocation creates exclusive claims per pod, preventing this sharing pattern. When these stages need to share GPUs for zero-copy data transfer and to avoid CPU-GPU memory copying overhead, DRA's [shareable ResourceClaims](https://kubernetes.io/docs/concepts/scheduling-eviction/dynamic-resource-allocation/#shareable-resources) become essential.
 
-_Solution_: By leveraging GPU sharing technologies like [NVIDIA Multi-Process Service (MPS)](https://docs.nvidia.com/deploy/mps/index.html) for efficient GPU sharing or [CUDA IPC (Inter-Process Communication)](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#interprocess-communication) for sharing GPU memory between processes, along with techniques like [GPU Direct Storage](https://developer.nvidia.com/gpudirect-storage) for direct data paths, Grove enables this pattern through `resourceSharing` at the PCSG level. By specifying a `ResourceClaimTemplateRef` with `scope: PerReplica` and `childrenNames` referencing both the preprocessing and training PCLQs, Grove creates a ResourceClaim per PCSG replica that is shared across the specified PCLQs. This enables both pod types to access the same GPU devices within each experiment while maintaining isolation across different experiments.
+_Solution_: By leveraging GPU sharing technologies like [NVIDIA Multi-Process Service (MPS)](https://docs.nvidia.com/deploy/mps/index.html) for efficient GPU sharing or [CUDA IPC (Inter-Process Communication)](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#interprocess-communication) for sharing GPU memory between processes, along with techniques like [GPU Direct Storage](https://developer.nvidia.com/gpudirect-storage) for direct data paths, Grove enables this pattern through `resourceSharing` at the PCSG level. By specifying a `ResourceClaimTemplateRef` with `scope: PerReplica` and a `filter` referencing both the preprocessing and training PCLQs, Grove creates a ResourceClaim per PCSG replica that is shared across the specified PCLQs. This enables both pod types to access the same GPU devices within each experiment while maintaining isolation across different experiments.
 
 ### Limitations/Risks & Mitigations
 
@@ -222,13 +223,13 @@ What are the current set of limitations or risks of this proposal? Think broadly
 
 ```go
 // ResourceSharingScope defines the sharing scope.
-// +kubebuilder:validation:Enum=Shared;PerReplica
+// +kubebuilder:validation:Enum=AllReplicas;PerReplica
 type ResourceSharingScope string
 
 const (
-	// ResourceSharingScopeShared creates one ResourceClaim for the owning resource
+	// ResourceSharingScopeAllReplicas creates one ResourceClaim for the owning resource
 	// (PCS, PCLQ, or PCSG), shared across all replicas and pods.
-	ResourceSharingScopeShared ResourceSharingScope = "Shared"
+	ResourceSharingScopeAllReplicas ResourceSharingScope = "AllReplicas"
 	// ResourceSharingScopePerReplica creates one ResourceClaim per replica, shared
 	// across all pods within that replica.
 	ResourceSharingScopePerReplica ResourceSharingScope = "PerReplica"
@@ -245,6 +246,7 @@ type ResourceClaimTemplateConfig struct {
 
 // ResourceClaimTemplateRef references a ResourceClaimTemplateSpec and defines the
 // sharing scope for the resulting ResourceClaim(s).
+// A given template name must appear at most once per resourceSharing list.
 type ResourceClaimTemplateRef struct {
 	// Name of the referenced template. When IsExternalRef is false (default), this must
 	// match a name in PodCliqueSetTemplateSpec.ResourceClaimTemplates. When IsExternalRef
@@ -261,13 +263,34 @@ type ResourceClaimTemplateRef struct {
 	// Scope determines the sharing granularity for the ResourceClaims created from
 	// this template.
 	Scope ResourceSharingScope `json:"scope"`
-	// ChildrenNames limits which children receive the ResourceClaims.
-	// The meaning depends on the level where the ref is used:
-	//   - PCS level: PodClique template names and/or PodCliqueScalingGroup config names
-	//   - PCSG level: PodClique template names within the scaling group
-	// If empty, all children receive them.
+	// Filter limits which children receive the ResourceClaims.
+	// If absent, all children receive them (broadcast).
 	// +optional
-	ChildrenNames []string `json:"childrenNames,omitempty"`
+	Filter *ResourceSharingFilter `json:"filter,omitempty"`
+}
+
+// ResourceSharingFilterMode defines whether the filter includes or excludes the listed children.
+// +kubebuilder:validation:Enum=Include;Exclude
+type ResourceSharingFilterMode string
+
+const (
+	ResourceSharingFilterModeInclude ResourceSharingFilterMode = "Include"
+	ResourceSharingFilterModeExclude ResourceSharingFilterMode = "Exclude"
+)
+
+// ResourceSharingFilter controls which children receive the ResourceClaims.
+type ResourceSharingFilter struct {
+	// Mode specifies whether the listed names are included or excluded.
+	// Defaults to Include if not specified.
+	// +optional
+	Mode ResourceSharingFilterMode `json:"mode,omitempty"`
+	// CliqueNames lists PodClique template names to include or exclude.
+	// +optional
+	CliqueNames []string `json:"cliqueNames,omitempty"`
+	// GroupNames lists PodCliqueScalingGroup config names to include or exclude.
+	// Only valid at PCS level.
+	// +optional
+	GroupNames []string `json:"groupNames,omitempty"`
 }
 ```
 
@@ -281,17 +304,16 @@ Note that a resource (PCLQ, PCSG) can have multiple instances (e.g., PCLQ `worke
 per PCSG replica). Scope A creates one RC per instance — not one RC globally. The naming must convey
 this "per instance, shared across replicas" semantic clearly.
 
-Candidate naming options (to be finalized):
+Candidate naming options considered:
 
 | Option | Scope A (1 RC per instance) | Scope B (1 RC per replica) | Notes |
 |---|---|---|---|
 | A | `Shared` | `PerReplica` | Intuitive but may suggest "1 RC globally" rather than "1 per instance" |
 | B | `PerInstance` | `PerReplica` | Technically precise; reviewer concern: `PerInstance` sounds similar to `PerReplica` without context |
-| C | `AllReplicas` | `PerReplica` | "Covers all replicas" vs "per replica"; short and clear |
+| **C (decided)** | **`AllReplicas`** | **`PerReplica`** | "Covers all replicas" vs "per replica"; short and clear |
 | D | `SharedAcrossReplicas` or `SharedByReplicas` | `ExclusivePerReplica` | Most explicit; verbose but unambiguous |
 
-The Go code below uses `Shared` / `PerReplica` as a placeholder. The final names will be decided
-after team discussion.
+The decided naming is `AllReplicas` / `PerReplica` (Option C).
 
 ---
 
@@ -364,7 +386,7 @@ spec:
           - name: gb200-gpu-pool
             isExternalRef: true
             namespace: gpu-templates
-            scope: Shared
+            scope: AllReplicas
         spec:
           roleName: prefill
           replicas: 3
@@ -378,7 +400,7 @@ spec:
           - name: gb200-gpu-pool
             isExternalRef: true
             namespace: gpu-templates
-            scope: Shared
+            scope: AllReplicas
         spec:
           roleName: decode
           replicas: 2
@@ -394,7 +416,9 @@ spec:
         resourceSharing:
           - name: nvswitch-fabric
             scope: PerReplica
-            childrenNames: [prefill-wkr, decode-wkr]
+            filter:
+              mode: Include
+              cliqueNames: [prefill-wkr, decode-wkr]
 ```
 
 In this example:
@@ -421,10 +445,10 @@ type PodCliqueSetTemplateSpec struct {
 	ResourceClaimTemplates []ResourceClaimTemplateConfig `json:"resourceClaimTemplates,omitempty"`
 	// ResourceSharing defines shared ResourceClaims at the PCS level. Each entry
 	// references a template (internal or external) and specifies a Scope:
-	//   - Shared: one RC for the entire PCS, shared across ALL pods in ALL replicas
+	//   - AllReplicas: one RC for the entire PCS, shared across ALL pods in ALL replicas
 	//   - PerReplica: one RC per PCS replica, shared across ALL pods in that replica
-	// ChildrenNames filters which children receive the claims (empty = all).
-	// At PCS level, ChildrenNames may contain PodClique template names and/or
+	// Filter limits which children receive the claims (empty = all).
+	// At PCS level, Filter may reference PodClique template names and/or
 	// PodCliqueScalingGroup config names.
 	// +optional
 	ResourceSharing []ResourceClaimTemplateRef `json:"resourceSharing,omitempty"`
@@ -437,18 +461,18 @@ Two new fields are added to `PodCliqueSetTemplateSpec`:
 - `ResourceClaimTemplates`: Declares named `ResourceClaimTemplateSpec` definitions that can be referenced
   by name from any `resourceSharing` field in the hierarchy. This is the single place to define internal
   templates, avoiding spec duplication.
-- `ResourceSharing`: References templates (internal or external) with a scope and optional `childrenNames` filter.
+- `ResourceSharing`: References templates (internal or external) with a scope and optional `filter`.
   The PCS controller creates the ResourceClaim objects and all child controllers (PCSG and standalone PCLQ)
-  inject the PCS-level claim references into pod specs, respecting the `childrenNames` filter.
+  inject the PCS-level claim references into pod specs, respecting the `filter`.
 
 Scope semantics:
-- `Shared`: One RC for the entire PCS — shared by every matching pod across all PCS replicas, all PCSGs, and all PCLQs.
+- `AllReplicas`: One RC for the entire PCS — shared by every matching pod across all PCS replicas, all PCSGs, and all PCLQs.
 - `PerReplica`: One RC per PCS replica — shared by every matching pod within that PCS replica.
 
 Filtering semantics:
-- `childrenNames` empty → broadcast to all PodCliques (default).
-- `childrenNames` specified → only PodCliques whose template name OR whose parent PCSG config name
-  appears in the list receive the claims.
+- `filter` absent → broadcast to all PodCliques (default).
+- `filter` specified → only PodCliques whose template name OR whose parent PCSG config name
+  matches the filter receive the claims.
 
 **Example (broadcast to all):**
 
@@ -480,7 +504,7 @@ spec:
                   count: 1
     resourceSharing:
       - name: shared-storage
-        scope: Shared
+        scope: AllReplicas
       - name: interconnect
         scope: PerReplica
     cliques:
@@ -497,9 +521,9 @@ spec:
 
 In this example:
 - Two templates are declared once at PCS level (`shared-storage`, `interconnect`)
-- No `childrenNames` → broadcast to all PodCliques
-- `Shared` creates 1 RC (`disagg-shr-0`) shared by ALL 8 pods across both PCS replicas
-- `PerReplica` creates 2 RCs (`disagg-0-rpl-1`, `disagg-1-rpl-1`), one per PCS replica,
+- No `filter` → broadcast to all PodCliques
+- `AllReplicas` creates 1 RC (`disagg-all-shared-storage`) shared by ALL 8 pods across both PCS replicas
+- `PerReplica` creates 2 RCs (`disagg-0-interconnect`, `disagg-1-interconnect`), one per PCS replica,
   each shared by the 4 worker pods in that replica
 
 **Example (targeted with filtering):**
@@ -532,12 +556,14 @@ spec:
                   count: 1
     resourceSharing:
       - name: shared-storage
-        scope: Shared
+        scope: AllReplicas
         # Broadcast to all (no filter) — every pod gets this storage claim
       - name: gpu-interconnect
         scope: PerReplica
         # Only pods in the training group receive the interconnect
-        childrenNames: [training-group]
+        filter:
+          mode: Include
+          groupNames: [training-group]
     cliques:
       - name: preprocessor
         spec:
@@ -573,8 +599,8 @@ spec:
 ```
 
 In this example:
-- `shared-storage` with `Shared` scope and no `childrenNames` → broadcast to all pods (preprocessor, trainer, and standalone monitor)
-- `gpu-interconnect` with `PerReplica` scope and `childrenNames: [training-group]` → only pods within `training-group` receive the interconnect claim. The standalone `monitor` PCLQ does not get it
+- `shared-storage` with `AllReplicas` scope and no `filter` → broadcast to all pods (preprocessor, trainer, and standalone monitor)
+- `gpu-interconnect` with `PerReplica` scope and `filter: {mode: Include, groupNames: [training-group]}` → only pods within `training-group` receive the interconnect claim. The standalone `monitor` PCLQ does not get it
 - This avoids giving GPU interconnect access to the monitor pod that doesn't need it
 
 ### PodClique-Level Resource Sharing
@@ -588,7 +614,7 @@ type PodCliqueTemplateSpec struct {
 	...
 	// ResourceSharing defines shared ResourceClaims for this PodClique. Each entry
 	// references a template (internal or external) and specifies a Scope:
-	//   - Shared: one RC per PCLQ, shared by all replica pods
+	//   - AllReplicas: one RC per PCLQ, shared by all replica pods
 	//   - PerReplica: one RC per PCLQ replica, shared by all pods within that replica
 	// NOTE: This is not the same as adding ResourceClaimTemplate inside the
 	// Spec.PodSpec.ResourceClaims[x].ResourceClaimTemplateName in the PodClique since that will
@@ -603,7 +629,7 @@ type PodCliqueTemplateSpec struct {
 To enable resource sharing among `Pod`s within a `PodClique`, a new field `ResourceSharing` is added
 to `PodCliqueTemplateSpec`. Each entry references a template by name and specifies a scope.
 
-- `Shared`: One RC per PCLQ — shared by all replica pods in that PCLQ.
+- `AllReplicas`: One RC per PCLQ — shared by all replica pods in that PCLQ.
 - `PerReplica`: One RC per PCLQ replica — shared by all pods within that replica.
 
 The parent controller (PCS or PCSG) processes the entries, creates the ResourceClaims, and injects the claim
@@ -611,7 +637,7 @@ references into the PCLQ's `PodSpec`.
 
 **Example:**
 
-The following example shows how to use `resourceSharing` with `Shared` scope to share GPUs among all
+The following example shows how to use `resourceSharing` with `AllReplicas` scope to share GPUs among all
 pods within a single PodClique:
 
 ```yaml
@@ -645,7 +671,7 @@ spec:
       - name: inference
         resourceSharing:
           - name: gpu-pool
-            scope: Shared
+            scope: AllReplicas
         spec:
           roleName: inference
           replicas: 4
@@ -667,7 +693,7 @@ spec:
 
 In this example:
 - The `gpu-pool` template is declared once at PCS level and referenced by name
-- The `Shared` scope creates one ResourceClaim per PodClique
+- The `AllReplicas` scope creates one ResourceClaim per PodClique
 - All 4 pods within each PodClique share the same 2 GPUs (with time-slicing)
 - The 2 PCS replicas maintain isolation (different ResourceClaims, different GPUs)
 
@@ -682,9 +708,9 @@ type PodCliqueScalingGroupConfig struct {
 	...
 	// ResourceSharing defines shared ResourceClaims at the PCSG level. Each entry
 	// references a template (internal or external) and specifies a Scope:
-	//   - Shared: one RC for the entire PCSG, shared across all replicas
+	//   - AllReplicas: one RC for the entire PCSG, shared across all replicas
 	//   - PerReplica: one RC per PCSG replica, shared across all PCLQs in that replica
-	// ChildrenNames limits which PodCliques in the group receive the claims (empty = all).
+	// Filter limits which PodCliques in the group receive the claims (empty = all).
 	// +optional
 	ResourceSharing []ResourceClaimTemplateRef `json:"resourceSharing,omitempty"`
 }
@@ -693,9 +719,9 @@ type PodCliqueScalingGroupConfig struct {
 **Example:**
 
 The following example demonstrates sharing resources across multiple PodCliques within a PodCliqueScalingGroup,
-using `PerReplica` scope so each PCSG replica gets its own isolated ResourceClaim. The `childrenNames`
+using `PerReplica` scope so each PCSG replica gets its own isolated ResourceClaim. The `filter`
 field limits which PCLQs in the group receive the claim. Note that the `coordinator` PCLQ is part of
-the scaling group but is excluded from the `childrenNames` filter — it does not receive the shared GPU ResourceClaim:
+the scaling group but is excluded from the `filter` — it does not receive the shared GPU ResourceClaim:
 
 ```yaml
 apiVersion: grove.io/v1alpha1
@@ -792,9 +818,11 @@ spec:
         resourceSharing:
           - name: gpu-mps-pool
             scope: PerReplica
-            childrenNames:
-              - data-preprocessor
-              - model-trainer
+            filter:
+              mode: Include
+              cliqueNames:
+                - data-preprocessor
+                - model-trainer
 ```
 
 In this example:
@@ -804,55 +832,55 @@ In this example:
 - Within each experiment (PCSG replica):
   - 2 preprocessing pods + 3 training pods = 5 total pods share the same 4 GPUs
   - All pods can access the same GPU memory space
-  - The coordinator pod does NOT receive the GPU ResourceClaim (it is not in `childrenNames`)
+  - The coordinator pod does NOT receive the GPU ResourceClaim (it is excluded by the `filter`)
 - Each of the 3 experiments maintains isolation (different ResourceClaims, different GPU sets)
 
 ### ResourceClaim Naming Convention
 
-Each RC name is derived from the owning resource's Kubernetes name plus a scope-specific keyword
-(`shr` for Shared, `rpl` for PerReplica) and the allocation index (position in the `resourceSharing`
-list). Using distinct keywords per scope makes naming collisions structurally impossible regardless
-of owner name patterns.
+Each RC name is derived from the owning resource's Kubernetes name, a scope segment, and the
+referenced template name (`rctName`). For `PerReplica` scope the segment is the replica index
+(e.g. `0`, `1`). For `AllReplicas` scope the literal keyword `all` takes the place of the replica
+index, ensuring that an AllReplicas RC name can never collide with a PerReplica RC name.
 
 | Level + Scope | RC Name Format |
 |---|---|
-| PCS `Shared` | `<pcsName>-shr-<allocIndex>` |
-| PCS `PerReplica` | `<pcsName>-<pcsReplicaIndex>-rpl-<allocIndex>` |
-| PCLQ `Shared` | `<pclqName>-shr-<allocIndex>` |
-| PCLQ `PerReplica` | `<pclqName>-<replicaIndex>-rpl-<allocIndex>` |
-| PCSG `Shared` | `<pcsgName>-shr-<allocIndex>` |
-| PCSG `PerReplica` | `<pcsgName>-<pcsgReplicaIndex>-rpl-<allocIndex>` |
+| PCS `AllReplicas` | `<pcsName>-all-<rctName>` |
+| PCS `PerReplica` | `<pcsName>-<pcsReplicaIndex>-<rctName>` |
+| PCLQ `AllReplicas` | `<pclqName>-all-<rctName>` |
+| PCLQ `PerReplica` | `<pclqName>-<replicaIndex>-<rctName>` |
+| PCSG `AllReplicas` | `<pcsgName>-all-<rctName>` |
+| PCSG `PerReplica` | `<pcsgName>-<pcsgReplicaIndex>-<rctName>` |
 
-The allocation index identifies the position of the entry in the `resourceSharing` list.
+The `rctName` is the name of the referenced `ResourceClaimTemplateConfig` or external `ResourceClaimTemplate`.
 
 **Concrete example** — PCS `disagg` (replica 0), PCSG `model-instance` (replicas: 2), cliques:
-`prefill-wkr` (replicas: 3, PCLQ Shared at index 0), `decode-wkr` (replicas: 2, PCLQ Shared
-at index 0), PCS Shared at index 0, PCSG PerReplica at index 0:
+`prefill-wkr` (replicas: 3, PCLQ AllReplicas rctName=gpu-pool), `decode-wkr` (replicas: 2, PCLQ AllReplicas
+rctName=gpu-pool), PCS AllReplicas rctName=storage1, PCSG PerReplica rctName=nvswitch:
 
 ```
-PCS Shared ResourceClaim:
-  disagg-shr-0                                    → shared by ALL pods in the entire PCS
+PCS AllReplicas ResourceClaim:
+  disagg-all-storage1                                     → shared by ALL pods in the entire PCS
 
 PCS PerReplica ResourceClaims:
-  (none in this example — would be disagg-<pcsReplicaIndex>-rpl-<index> if configured)
+  (none in this example — would be disagg-<pcsReplicaIndex>-<rctName> if configured)
 
 PCSG PerReplica ResourceClaims:
-  disagg-0-model-instance-0-rpl-0                 → shared by ALL pods in PCSG replica 0
-  disagg-0-model-instance-1-rpl-0                 → shared by ALL pods in PCSG replica 1
+  disagg-0-model-instance-0-nvswitch                      → shared by ALL pods in PCSG replica 0
+  disagg-0-model-instance-1-nvswitch                      → shared by ALL pods in PCSG replica 1
 
-PCLQ Shared ResourceClaims:
-  disagg-0-model-instance-0-prefill-wkr-shr-0     → shared by all prefill-wkr pods in PCSG replica 0
-  disagg-0-model-instance-1-prefill-wkr-shr-0     → shared by all prefill-wkr pods in PCSG replica 1
-  disagg-0-model-instance-0-decode-wkr-shr-0      → shared by all decode-wkr pods in PCSG replica 0
-  disagg-0-model-instance-1-decode-wkr-shr-0      → shared by all decode-wkr pods in PCSG replica 1
+PCLQ AllReplicas ResourceClaims:
+  disagg-0-model-instance-0-prefill-wkr-all-gpu-pool      → shared by all prefill-wkr pods in PCSG replica 0
+  disagg-0-model-instance-1-prefill-wkr-all-gpu-pool      → shared by all prefill-wkr pods in PCSG replica 1
+  disagg-0-model-instance-0-decode-wkr-all-gpu-pool       → shared by all decode-wkr pods in PCSG replica 0
+  disagg-0-model-instance-1-decode-wkr-all-gpu-pool       → shared by all decode-wkr pods in PCSG replica 1
 ```
 
 **For standalone PodCliques** (not in a PCSG), the PCLQ resource name is `<pcs>-<pcsIndex>-<pclqTemplate>`,
 so the pattern is the same:
 
 ```
-PCLQ Shared:
-  my-svc-0-frontend-shr-0    → shared by all frontend pods
+PCLQ AllReplicas:
+  my-svc-0-frontend-all-gpu-pool    → shared by all frontend pods
 ```
 
 ### Owner References and Garbage Collection
@@ -863,18 +891,18 @@ whose parent still exists.
 
 | Level + Scope | Owner | Cleanup on Scale-Down |
 |---|---|---|
-| PCS `Shared` | PCS object | GC'd when PCS is deleted |
+| PCS `AllReplicas` | PCS object | GC'd when PCS is deleted |
 | PCS `PerReplica` | PCS object | Explicit cleanup when PCS replicas are scaled down |
-| PCSG `Shared` | PCSG object | GC'd when PCSG is deleted |
+| PCSG `AllReplicas` | PCSG object | GC'd when PCSG is deleted |
 | PCSG `PerReplica` | PCSG object | Explicit cleanup when PCSG replicas are scaled down |
-| PCLQ `Shared` (in PCSG) | PCSG object | Explicit cleanup when PCSG replicas are scaled down |
-| PCLQ `Shared` (standalone) | PCS object | Explicit cleanup when PCS replicas are scaled down |
+| PCLQ `AllReplicas` (in PCSG) | PCSG object | Explicit cleanup when PCSG replicas are scaled down |
+| PCLQ `AllReplicas` (standalone) | PCS object | Explicit cleanup when PCS replicas are scaled down |
 | PCLQ `PerReplica` (in PCSG) | PCSG object | Explicit cleanup when PCLQ replicas are scaled down |
 | PCLQ `PerReplica` (standalone) | PCS object | Explicit cleanup when PCLQ replicas are scaled down |
 
 **Design rationale**: Owning RCs at the PCSG/PCS level (rather than the PCLQ level) avoids depending on
 the controller-runtime cache to reflect freshly created PCLQ objects during the same reconcile. It also
-ensures that PCLQ Shared RCs survive PCLQ rolling updates — the replacement PCLQ reuses the existing
+ensures that PCLQ AllReplicas RCs survive PCLQ rolling updates — the replacement PCLQ reuses the existing
 RC rather than the old RC being garbage collected and a new one created.
 
 ### Monitoring
