@@ -12,8 +12,7 @@
     - [Limitations/Risks &amp; Mitigations](#limitationsrisks--mitigations)
   - [Design Details](#design-details)
     - [Common Types](#common-types)
-  - [count: 8](#count-8)
-- [--- PodCliqueSet using both internal and external references ---](#----podcliqueset-using-both-internal-and-external-references----)
+    - [PodCliqueSet-Level Resource Sharing](#podcliqueset-level-resource-sharing)
     - [PodClique-Level Resource Sharing](#podclique-level-resource-sharing)
     - [PodCliqueScalingGroup-Level Resource Sharing](#podcliquescalinggroup-level-resource-sharing)
     - [ResourceClaim Naming Convention](#resourceclaim-naming-convention)
@@ -133,9 +132,9 @@ _Solution_: Grove orchestrates resource sharing via `ResourceClaimTemplateRef` e
 ```
 PCS:
   resourceClaimTemplates:
-    - name: RCT-GPU-POOL-PCA, spec: ...
-    - name: RCT-GPU-POOL-PCB, spec: ...
-    - name: RCT-NVSWITCH, spec: ...
+    - name: RCT-GPU-POOL-PCA, template: ...
+    - name: RCT-GPU-POOL-PCB, template: ...
+    - name: RCT-NVSWITCH, template: ...
   cliques:
     - PCA: replicas=3,
            resourceSharing=[{name: RCT-GPU-POOL-PCA, scope: Shared}]
@@ -146,7 +145,7 @@ PCS:
            resourceSharing=[{name: RCT-NVSWITCH, scope: PerReplica, childrenNames: [PCA, PCB]}]
 ```
 
-The resulting ResourceClaim assignment per pod:
+The resulting ResourceClaim assignment per pod (PCS name and replica are omitted for brevity):
 
 | Pod | RC-NVSWITCH (PCSG PerReplica) | RC-GPU-POOL-PCA (PCLQ Shared) | RC-GPU-POOL-PCB (PCLQ Shared) |
 |---|---|---|---|
@@ -317,7 +316,7 @@ spec:
   template:
     resourceClaimTemplates:
       - name: nvswitch-fabric
-        spec:
+        template:
           spec:
             devices:
               requests:
@@ -429,7 +428,7 @@ spec:
   template:
     resourceClaimTemplates:
       - name: shared-storage
-        spec:
+        template:
           spec:
             devices:
               requests:
@@ -437,7 +436,7 @@ spec:
                   deviceClassName: storage.example.com
                   count: 1
       - name: interconnect
-        spec:
+        template:
           spec:
             devices:
               requests:
@@ -464,8 +463,8 @@ spec:
 In this example:
 - Two templates are declared once at PCS level (`shared-storage`, `interconnect`)
 - No `childrenNames` → broadcast to all PodCliques
-- `Shared` creates 1 RC (`disagg-rct-0`) shared by ALL 8 pods across both PCS replicas
-- `PerReplica` creates 2 RCs (`disagg-rep-0-rct-1`, `disagg-rep-1-rct-1`), one per PCS replica,
+- `Shared` creates 1 RC (`disagg-shr-0`) shared by ALL 8 pods across both PCS replicas
+- `PerReplica` creates 2 RCs (`disagg-0-rpl-1`, `disagg-1-rpl-1`), one per PCS replica,
   each shared by the 4 worker pods in that replica
 
 **Example (targeted with filtering):**
@@ -481,7 +480,7 @@ spec:
   template:
     resourceClaimTemplates:
       - name: shared-storage
-        spec:
+        template:
           spec:
             devices:
               requests:
@@ -489,7 +488,7 @@ spec:
                   deviceClassName: storage.example.com
                   count: 1
       - name: gpu-interconnect
-        spec:
+        template:
           spec:
             devices:
               requests:
@@ -591,7 +590,7 @@ spec:
   template:
     resourceClaimTemplates:
       - name: gpu-pool
-        spec:
+        template:
           spec:
             devices:
               requests:
@@ -674,7 +673,7 @@ spec:
   template:
     resourceClaimTemplates:
       - name: gpu-mps-pool
-        spec:
+        template:
           spec:
             devices:
               requests:
@@ -775,21 +774,21 @@ In this example:
 
 ### ResourceClaim Naming Convention
 
-Each RC name is derived from the owning resource's Kubernetes name plus a suffix that encodes the
-allocation index (position in the `resourceSharing` list). `PerReplica` names include a `-rep-` infix
-before the replica index to prevent naming collisions (e.g., a PCS named `a-0` with `Shared` scope
-vs a PCS named `a` with `PerReplica` scope at replica 0).
+Each RC name is derived from the owning resource's Kubernetes name plus a scope-specific keyword
+(`shr` for Shared, `rpl` for PerReplica) and the allocation index (position in the `resourceSharing`
+list). Using distinct keywords per scope makes naming collisions structurally impossible regardless
+of owner name patterns.
 
 | Level + Scope | RC Name Format |
 |---|---|
-| PCS `Shared` | `<pcsName>-rct-<allocIndex>` |
-| PCS `PerReplica` | `<pcsName>-rep-<pcsReplicaIndex>-rct-<allocIndex>` |
-| PCLQ `Shared` | `<pclqName>-rct-<allocIndex>` |
-| PCLQ `PerReplica` | `<pclqName>-rep-<replicaIndex>-rct-<allocIndex>` |
-| PCSG `Shared` | `<pcsgName>-rct-<allocIndex>` |
-| PCSG `PerReplica` | `<pcsgName>-rep-<pcsgReplicaIndex>-rct-<allocIndex>` |
+| PCS `Shared` | `<pcsName>-shr-<allocIndex>` |
+| PCS `PerReplica` | `<pcsName>-<pcsReplicaIndex>-rpl-<allocIndex>` |
+| PCLQ `Shared` | `<pclqName>-shr-<allocIndex>` |
+| PCLQ `PerReplica` | `<pclqName>-<replicaIndex>-rpl-<allocIndex>` |
+| PCSG `Shared` | `<pcsgName>-shr-<allocIndex>` |
+| PCSG `PerReplica` | `<pcsgName>-<pcsgReplicaIndex>-rpl-<allocIndex>` |
 
-The `rct-<index>` suffix identifies the position of the entry in the `resourceSharing` list.
+The allocation index identifies the position of the entry in the `resourceSharing` list.
 
 **Concrete example** — PCS `disagg` (replica 0), PCSG `model-instance` (replicas: 2), cliques:
 `prefill-wkr` (replicas: 3, PCLQ Shared at index 0), `decode-wkr` (replicas: 2, PCLQ Shared
@@ -797,20 +796,20 @@ at index 0), PCS Shared at index 0, PCSG PerReplica at index 0:
 
 ```
 PCS Shared ResourceClaim:
-  disagg-rct-0                                    → shared by ALL pods in the entire PCS
+  disagg-shr-0                                    → shared by ALL pods in the entire PCS
 
 PCS PerReplica ResourceClaims:
-  (none in this example — would be disagg-rep-0-rct-<index> if configured)
+  (none in this example — would be disagg-<pcsReplicaIndex>-rpl-<index> if configured)
 
 PCSG PerReplica ResourceClaims:
-  disagg-0-model-instance-rep-0-rct-0             → shared by ALL pods in PCSG replica 0
-  disagg-0-model-instance-rep-1-rct-0             → shared by ALL pods in PCSG replica 1
+  disagg-0-model-instance-0-rpl-0                 → shared by ALL pods in PCSG replica 0
+  disagg-0-model-instance-1-rpl-0                 → shared by ALL pods in PCSG replica 1
 
 PCLQ Shared ResourceClaims:
-  disagg-0-model-instance-0-prefill-wkr-rct-0     → shared by all prefill-wkr pods in PCSG replica 0
-  disagg-0-model-instance-1-prefill-wkr-rct-0     → shared by all prefill-wkr pods in PCSG replica 1
-  disagg-0-model-instance-0-decode-wkr-rct-0      → shared by all decode-wkr pods in PCSG replica 0
-  disagg-0-model-instance-1-decode-wkr-rct-0      → shared by all decode-wkr pods in PCSG replica 1
+  disagg-0-model-instance-0-prefill-wkr-shr-0     → shared by all prefill-wkr pods in PCSG replica 0
+  disagg-0-model-instance-1-prefill-wkr-shr-0     → shared by all prefill-wkr pods in PCSG replica 1
+  disagg-0-model-instance-0-decode-wkr-shr-0      → shared by all decode-wkr pods in PCSG replica 0
+  disagg-0-model-instance-1-decode-wkr-shr-0      → shared by all decode-wkr pods in PCSG replica 1
 ```
 
 **For standalone PodCliques** (not in a PCSG), the PCLQ resource name is `<pcs>-<pcsIndex>-<pclqTemplate>`,
@@ -818,7 +817,7 @@ so the pattern is the same:
 
 ```
 PCLQ Shared:
-  my-svc-0-frontend-rct-0    → shared by all frontend pods
+  my-svc-0-frontend-shr-0    → shared by all frontend pods
 ```
 
 ### Owner References and Garbage Collection
