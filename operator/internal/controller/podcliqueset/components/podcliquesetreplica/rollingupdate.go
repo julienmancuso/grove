@@ -44,9 +44,6 @@ func (r _resource) orchestrateRollingUpdate(ctx context.Context, logger logr.Log
 	}
 
 	if len(pcs.Status.UpdateProgress.CurrentlyUpdating) > 0 && updateWork.currentlyUpdatingReplicaInfo != nil {
-		if updateWork.currentlyUpdatingReplicaInfo.updateProgress.done {
-			pcs.Status.UpdateProgress.CurrentlyUpdating[0].UpdateEndedAt = ptr.To(metav1.Now())
-		}
 		if err = r.updatePCSWithReplicaUpdateProgress(ctx, logger, pcs, updateWork.currentlyUpdatingReplicaInfo.updateProgress); err != nil {
 			return err
 		}
@@ -69,7 +66,7 @@ func (r _resource) orchestrateRollingUpdate(ctx context.Context, logger logr.Log
 		return groveerr.New(
 			groveerr.ErrCodeContinueReconcileAndRequeue,
 			component.OperationSync,
-			fmt.Sprintf("commencing rolling update of PodCliqueSet replica index %d", nextReplicaToUpdate),
+			fmt.Sprintf("commencing rolling update of PodCliqueSet replica index %d", *nextReplicaToUpdate),
 		)
 	}
 	return nil
@@ -135,6 +132,11 @@ func (r _resource) getPCSReplicaInfos(ctx context.Context, pcs *grovecorev1alpha
 
 // updatePCSWithReplicaUpdateProgress records the progress of the currently updating replica.
 func (r _resource) updatePCSWithReplicaUpdateProgress(ctx context.Context, logger logr.Logger, pcs *grovecorev1alpha1.PodCliqueSet, currentReplicaUpdateProgress replicaUpdateProgress) error {
+	original := pcs.DeepCopy()
+	if currentReplicaUpdateProgress.done {
+		pcs.Status.UpdateProgress.CurrentlyUpdating[0].UpdateEndedAt = ptr.To(metav1.Now())
+	}
+
 	// Set the updatedCliques
 	updatedCliqueFQNs := lo.Uniq(append(pcs.Status.UpdateProgress.UpdatedPodCliques, currentReplicaUpdateProgress.updatedPCLQFQNs...))
 	// There is a possibility that the replica that is currently getting updated has been deleted due to scale-in.
@@ -158,7 +160,7 @@ func (r _resource) updatePCSWithReplicaUpdateProgress(ctx context.Context, logge
 	pcs.Status.UpdateProgress.UpdatedPodCliqueScalingGroups = updatedPCSGFQNs
 
 	logger.Info("Updating PodCliqueSet status with newly updated PodCliques and PodClique")
-	if err := r.updateRollingUpdateProgressStatus(ctx, logger, pcs); err != nil {
+	if err := r.patchRollingUpdateProgressStatus(ctx, logger, pcs, original); err != nil {
 		logger.Error(err, "failed to update rolling update progress", "replicaIndex", pcs.Status.UpdateProgress.CurrentlyUpdating[0].ReplicaIndex)
 		return err
 	}
@@ -167,6 +169,8 @@ func (r _resource) updatePCSWithReplicaUpdateProgress(ctx context.Context, logge
 
 // updatePCSWithNextSelectedReplica initiates an update for the next replica or marks completion.
 func (r _resource) updatePCSWithNextSelectedReplica(ctx context.Context, logger logr.Logger, pcs *grovecorev1alpha1.PodCliqueSet, nextPCSReplicaToUpdate *int) error {
+	original := pcs.DeepCopy()
+
 	if nextPCSReplicaToUpdate == nil {
 		logger.Info("Rolling update has completed")
 		pcs.Status.UpdateProgress.UpdateEndedAt = ptr.To(metav1.Now())
@@ -180,12 +184,12 @@ func (r _resource) updatePCSWithNextSelectedReplica(ctx context.Context, logger 
 			},
 		}
 	}
-	return r.updateRollingUpdateProgressStatus(ctx, logger, pcs)
+	return r.patchRollingUpdateProgressStatus(ctx, logger, pcs, original)
 }
 
-// updateRollingUpdateProgressStatus persists rolling update progress to the PCS status.
-func (r _resource) updateRollingUpdateProgressStatus(ctx context.Context, logger logr.Logger, pcs *grovecorev1alpha1.PodCliqueSet) error {
-	if err := r.client.Status().Update(ctx, pcs); err != nil {
+// patchRollingUpdateProgressStatus persists rolling update progress to the PCS status using a merge patch.
+func (r _resource) patchRollingUpdateProgressStatus(ctx context.Context, logger logr.Logger, pcs *grovecorev1alpha1.PodCliqueSet, original *grovecorev1alpha1.PodCliqueSet) error {
+	if err := r.client.Status().Patch(ctx, pcs, client.MergeFrom(original)); err != nil {
 		return groveerr.WrapError(
 			err,
 			errCodeUpdatePCSStatus,
