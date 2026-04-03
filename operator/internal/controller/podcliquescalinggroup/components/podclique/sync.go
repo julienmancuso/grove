@@ -181,6 +181,25 @@ func (r _resource) triggerDeletionOfExcessPCSGReplicas(logger logr.Logger, sc *s
 			}
 		}
 
+		// Cleanup PCLQ-within-PCSG ResourceClaims (AllReplicas + PerReplica) for deleted replicas.
+		// When a PCSG replica is deleted, the child PCLQs are garbage-collected, but their
+		// RCs are owned by the PCS and must be explicitly removed.
+		for _, idxStr := range replicaIndicesToDelete {
+			idx, err := strconv.Atoi(idxStr)
+			if err != nil {
+				continue
+			}
+			for _, cliqueName := range sc.pcsg.Spec.CliqueNames {
+				pclqName := apicommon.GeneratePodCliqueName(apicommon.ResourceNameReplica{
+					Name:    sc.pcsg.Name,
+					Replica: idx,
+				}, cliqueName)
+				if err := resourceclaim.DeleteAllRCsWithPrefix(sc.ctx, r.client, pclqName+"-", sc.pcsg.Namespace, sc.pcs.Name); err != nil {
+					logger.Error(err, "Failed to cleanup PCLQ ResourceClaims for deleted PCSG replica", "pclq", pclqName)
+				}
+			}
+		}
+
 		return sc.refreshExistingPCLQs(sc.pcsg)
 	}
 	return nil

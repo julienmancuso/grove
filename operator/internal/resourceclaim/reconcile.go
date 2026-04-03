@@ -226,6 +226,37 @@ func DeletePerReplicaRCs(
 	return nil
 }
 
+// DeleteAllRCsWithPrefix lists all ResourceClaims for the PCS and deletes
+// any whose name starts with the given prefix. This is used during PCSG
+// scale-in to remove all RCs (AllReplicas + PerReplica) for PCLQs that
+// belonged to a deleted PCSG replica.
+func DeleteAllRCsWithPrefix(
+	ctx context.Context,
+	cl client.Client,
+	prefix, namespace, pcsName string,
+) error {
+	rcList := &resourcev1.ResourceClaimList{}
+	if err := cl.List(ctx, rcList,
+		client.InNamespace(namespace),
+		client.MatchingLabels(ResourceClaimLabels(pcsName)),
+	); err != nil {
+		return fmt.Errorf("failed to list ResourceClaims for prefix cleanup: %w", err)
+	}
+
+	var errs []error
+	for _, rc := range rcList.Items {
+		if strings.HasPrefix(rc.Name, prefix) {
+			if err := DeleteResourceClaim(ctx, cl, rc.Name, namespace); err != nil {
+				errs = append(errs, fmt.Errorf("delete RC %q: %w", rc.Name, err))
+			}
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("failed to delete RCs with prefix %q: %v", prefix, errs)
+	}
+	return nil
+}
+
 // CleanupStalePerReplicaRCs lists all ResourceClaims for the PCS and deletes
 // PerReplica-scoped ones whose replica index >= currentReplicas for the given
 // owner. This handles scale-in for any owner level (standalone PCLQ, PCSG, etc.)
