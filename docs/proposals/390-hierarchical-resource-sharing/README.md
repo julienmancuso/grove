@@ -12,8 +12,8 @@
     - [Limitations/Risks &amp; Mitigations](#limitationsrisks--mitigations)
   - [Design Details](#design-details)
     - [Common Types](#common-types)
-    - [ResourceClaimTemplate Referencing](#resourceclaimtemplate-referencing)
-    - [PodCliqueSet-Level Resource Sharing](#podcliqueset-level-resource-sharing)
+  - [count: 8](#count-8)
+- [--- PodCliqueSet using both internal and external references ---](#----podcliqueset-using-both-internal-and-external-references----)
     - [PodClique-Level Resource Sharing](#podclique-level-resource-sharing)
     - [PodCliqueScalingGroup-Level Resource Sharing](#podcliquescalinggroup-level-resource-sharing)
     - [ResourceClaim Naming Convention](#resourceclaim-naming-convention)
@@ -618,8 +618,8 @@ to `PodCliqueTemplateSpec`. Each entry references a template by name and specifi
 - `AllReplicas`: One RC per PCLQ — shared by all replica pods in that PCLQ.
 - `PerReplica`: One RC per PCLQ replica — shared by all pods within that replica.
 
-The parent controller (PCS or PCSG) processes the entries, creates the ResourceClaims, and injects the claim
-references into the PCLQ's `PodSpec`.
+The PCLQ controller processes the entries and creates the ResourceClaims (owned by the PCLQ). The parent
+controller (PCS or PCSG) injects the claim references into the PCLQ's `PodSpec`.
 
 **Example:**
 
@@ -868,9 +868,11 @@ PCLQ AllReplicas:
 
 ### Owner References and Garbage Collection
 
-ResourceClaim ownership determines garbage collection behavior. All RCs are owned by the resource that
-defines the broadest scope they serve. On scale-down, explicit cleanup is performed for PerReplica RCs
-whose parent still exists.
+Each ResourceClaim is owned by the resource at the level that defines the sharing — PCS-level RCs
+are owned by the PCS, PCSG-level RCs by the PCSG, and PCLQ-level RCs by the PCLQ. Kubernetes
+garbage collection automatically cleans up RCs when their owner is deleted. On scale-down,
+the operator explicitly deletes stale PerReplica RCs whose replica index is no longer valid,
+using label selectors scoped to the owning resource.
 
 | Level + Scope | Owner | Cleanup on Scale-Down |
 |---|---|---|
@@ -878,15 +880,12 @@ whose parent still exists.
 | PCS `PerReplica` | PCS object | Explicit cleanup when PCS replicas are scaled down |
 | PCSG `AllReplicas` | PCSG object | GC'd when PCSG is deleted |
 | PCSG `PerReplica` | PCSG object | Explicit cleanup when PCSG replicas are scaled down |
-| PCLQ `AllReplicas` (in PCSG) | PCSG object | Explicit cleanup when PCSG replicas are scaled down |
-| PCLQ `AllReplicas` (standalone) | PCS object | Explicit cleanup when PCS replicas are scaled down |
-| PCLQ `PerReplica` (in PCSG) | PCSG object | Explicit cleanup when PCLQ replicas are scaled down |
-| PCLQ `PerReplica` (standalone) | PCS object | Explicit cleanup when PCLQ replicas are scaled down |
+| PCLQ `AllReplicas` | PCLQ object | GC'd when PCLQ is deleted |
+| PCLQ `PerReplica` | PCLQ object | Explicit cleanup when PCLQ replicas are scaled down |
 
-**Design rationale**: Owning RCs at the PCSG/PCS level (rather than the PCLQ level) avoids depending on
-the controller-runtime cache to reflect freshly created PCLQ objects during the same reconcile. It also
-ensures that PCLQ AllReplicas RCs survive PCLQ rolling updates — the replacement PCLQ reuses the existing
-RC rather than the old RC being garbage collected and a new one created.
+**Design rationale**: Owning RCs at the same level that defines the sharing aligns the RC lifecycle
+with its owner — deleting a PCLQ, PCSG, or PCS automatically garbage-collects its RCs without
+requiring explicit cleanup.
 
 ### Monitoring
 
