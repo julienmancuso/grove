@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	"github.com/ai-dynamo/grove/operator/api/common/constants"
@@ -136,7 +135,7 @@ func (r _resource) Sync(ctx context.Context, logger logr.Logger, pclq *grovecore
 
 // buildResource constructs a Pod resource from PodClique specifications, setting up metadata, labels, scheduling gates, and dependencies
 func (r _resource) buildResource(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grovecorev1alpha1.PodClique, podGangName string, pod *corev1.Pod, podIndex int) error {
-	// Extract PCS replica index from PodClique name for now (will be replaced with direct parameter)
+	// Extract PCS replica index from PodClique FQN
 	pcsName := componentutils.GetPodCliqueSetName(pclq.ObjectMeta)
 	pcsReplicaIndex, err := utils.GetPodCliqueSetReplicaIndexFromPodCliqueFQN(pcsName, pclq.Name)
 	if err != nil {
@@ -181,8 +180,8 @@ func (r _resource) buildResource(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grov
 	addEnvironmentVariables(pod, pclq, pcsName, pcsReplicaIndex)
 	// Configure hostname and subdomain for service discovery
 	configurePodHostname(pcsName, pcsReplicaIndex, pclq.Name, pod, podIndex)
-	// Inject PCLQ-level PerReplica ResourceClaim refs (one per pod/replica)
-	injectPCLQPerReplicaResourceClaimRefs(pcs, pclq, &pod.Spec, podIndex)
+	// Inject all ResourceClaim refs (PCS, PCSG, PCLQ) at every scope into the pod
+	injectAllResourceClaimRefs(pcs, pclq, &pod.Spec, pcsReplicaIndex, podIndex)
 	// If there is a need to enforce a Startup-Order then configure the init container and add it to the Pod Spec.
 	if len(pclq.Spec.StartsAfter) != 0 {
 		return configurePodInitContainer(pcs, pclq, pod)
@@ -190,16 +189,52 @@ func (r _resource) buildResource(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grov
 	return nil
 }
 
-// injectPCLQPerReplicaResourceClaimRefs injects PerReplica-scope PCLQ ResourceClaim
-// references into a Pod's spec. Each pod gets its own unique RC based on podIndex.
-func injectPCLQPerReplicaResourceClaimRefs(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grovecorev1alpha1.PodClique, podSpec *corev1.PodSpec, podIndex int) {
-	pclqTemplateSpec, ok := lo.Find(pcs.Spec.Template.Cliques, func(t *grovecorev1alpha1.PodCliqueTemplateSpec) bool {
-		return strings.HasSuffix(pclq.Name, t.Name)
-	})
-	if !ok || len(pclqTemplateSpec.ResourceSharing) == 0 {
+// injectAllResourceClaimRefs is the single consolidated injection point for all
+// ResourceClaim references into a Pod's spec. It injects refs from every level
+// of the hierarchy: PCS, PCSG (if applicable), and PCLQ.
+func injectAllResourceClaimRefs(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grovecorev1alpha1.PodClique, podSpec *corev1.PodSpec, pcsReplicaIndex, podIndex int) {
+	cliqueName, err := utils.GetPodCliqueNameFromPodCliqueFQN(pclq.ObjectMeta)
+	if err != nil {
 		return
 	}
-	resourceclaim.InjectResourceClaimRefs(podSpec, pclq.Name, pclqTemplateSpec.ResourceSharing, &podIndex)
+	pclqTemplateSpec := componentutils.FindPodCliqueTemplateSpecByName(pcs, cliqueName)
+	if pclqTemplateSpec == nil {
+		return
+	}
+
+	// Build match names for PCS-level filter resolution
+	matchNames := []string{pclqTemplateSpec.Name}
+
+	pcsgName := pclq.Labels[apicommon.LabelPodCliqueScalingGroup]
+	var pcsgConfig *grovecorev1alpha1.PodCliqueScalingGroupConfig
+	var pcsgReplicaIndex int
+	if pcsgName != "" {
+		pcsgConfig = resourceclaim.FindPCSGConfigByName(pcs, pcsgName, pcsReplicaIndex)
+		if pcsgConfig != nil {
+			matchNames = append(matchNames, pcsgConfig.Name)
+		}
+		if idxStr, exists := pclq.Labels[apicommon.LabelPodCliqueScalingGroupReplicaIndex]; exists {
+			pcsgReplicaIndex, _ = strconv.Atoi(idxStr)
+		}
+	}
+
+	// PCS-level: AllReplicas + PerReplica
+	if len(pcs.Spec.Template.ResourceSharing) > 0 {
+		resourceclaim.InjectResourceClaimRefs(podSpec, pcs.Name, pcs.Spec.Template.ResourceSharing, nil, matchNames...)
+		resourceclaim.InjectResourceClaimRefs(podSpec, pcs.Name, pcs.Spec.Template.ResourceSharing, &pcsReplicaIndex, matchNames...)
+	}
+
+	// PCSG-level: AllReplicas + PerReplica (only when PCLQ belongs to a PCSG)
+	if pcsgConfig != nil && len(pcsgConfig.ResourceSharing) > 0 {
+		resourceclaim.InjectResourceClaimRefs(podSpec, pcsgName, pcsgConfig.ResourceSharing, nil, pclqTemplateSpec.Name)
+		resourceclaim.InjectResourceClaimRefs(podSpec, pcsgName, pcsgConfig.ResourceSharing, &pcsgReplicaIndex, pclqTemplateSpec.Name)
+	}
+
+	// PCLQ-level: AllReplicas + PerReplica
+	if len(pclqTemplateSpec.ResourceSharing) > 0 {
+		resourceclaim.InjectResourceClaimRefs(podSpec, pclq.Name, pclqTemplateSpec.ResourceSharing, nil)
+		resourceclaim.InjectResourceClaimRefs(podSpec, pclq.Name, pclqTemplateSpec.ResourceSharing, &podIndex)
+	}
 }
 
 // Delete removes all Pods associated with the specified PodClique

@@ -17,7 +17,10 @@ package resourceclaim
 import (
 	"context"
 	"fmt"
+	"maps"
+	"strconv"
 
+	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	"github.com/ai-dynamo/grove/operator/internal/controller/common/component"
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
@@ -100,6 +103,8 @@ func (r _resource) Sync(ctx context.Context, logger logr.Logger, pcs *grovecorev
 	// PerReplica-scope: one set of RCs per PCS replica
 	for replica := range pcs.Spec.Replicas {
 		replicaIdx := int(replica)
+		replicaLabels := maps.Clone(labels)
+		replicaLabels[apicommon.LabelPodCliqueSetReplicaIndex] = strconv.Itoa(replicaIdx)
 		tasks = append(tasks, utils.Task{
 			Name: fmt.Sprintf("EnsurePCSPerReplicaRCs-rep-%d", replicaIdx),
 			Fn: func(ctx context.Context) error {
@@ -108,7 +113,7 @@ func (r _resource) Sync(ctx context.Context, logger logr.Logger, pcs *grovecorev
 					pcs.Name, pcs.Namespace,
 					refs,
 					pcs.Spec.Template.ResourceClaimTemplates,
-					labels,
+					replicaLabels,
 					pcs, r.scheme,
 					&replicaIdx,
 				)
@@ -133,49 +138,30 @@ func (r _resource) Sync(ctx context.Context, logger logr.Logger, pcs *grovecorev
 	return nil
 }
 
-// cleanupStaleResourceClaims deletes ResourceClaims that belong to PCS replicas
-// that no longer exist after a scale-in. All RCs across every hierarchy level
-// (PCS PerReplica, standalone PCLQ, PCSG, PCLQ-within-PCSG) for a given PCS
-// replica share the name prefix "<pcsName>-<replicaIndex>-", so a simple prefix
-// match identifies stale RCs without needing to traverse the PCS spec.
-func (r _resource) cleanupStaleResourceClaims(ctx context.Context, logger logr.Logger, pcs *grovecorev1alpha1.PodCliqueSet) error {
-	existing, err := r.GetExistingResourceNames(ctx, logger, pcs.ObjectMeta)
-	if err != nil {
-		return err
-	}
-	if len(existing) == 0 {
-		return nil
-	}
-
-	var tasks []utils.Task
-	for _, name := range existing {
-		if !resourceclaim.IsStalePerReplicaRC(pcs.Name, int(pcs.Spec.Replicas), name) {
-			continue
-		}
-		rcName := name
-		logger.V(4).Info("Deleting stale ResourceClaim", "name", rcName)
-		tasks = append(tasks, utils.Task{
-			Name: fmt.Sprintf("DeleteStaleRC-%s", rcName),
-			Fn: func(ctx context.Context) error {
-				return resourceclaim.DeleteResourceClaim(ctx, r.client, rcName, pcs.Namespace)
-			},
-		})
-	}
-	if len(tasks) > 0 {
-		if runResult := utils.RunConcurrently(ctx, logger, tasks); runResult.HasErrors() {
-			return groveerr.WrapError(runResult.GetAggregatedError(),
-				errSyncPCSResourceClaim,
-				component.OperationSync,
-				fmt.Sprintf("Error cleaning up stale ResourceClaims for %s", client.ObjectKeyFromObject(pcs)),
-			)
-		}
+// cleanupStaleResourceClaims deletes PCS-level PerReplica ResourceClaims that
+// belong to PCS replicas that no longer exist after a scale-in.
+// Uses LabelPodCliqueSetReplicaIndex for the NotIn selector, which only matches
+// PCS-level RCs (PCSG/PCLQ-level RCs use different label keys).
+func (r _resource) cleanupStaleResourceClaims(ctx context.Context, _ logr.Logger, pcs *grovecorev1alpha1.PodCliqueSet) error {
+	labels := resourceclaim.ResourceClaimLabels(pcs.Name)
+	if err := resourceclaim.CleanupStalePerReplicaRCs(
+		ctx, r.client,
+		pcs.Namespace, labels,
+		int(pcs.Spec.Replicas),
+		apicommon.LabelPodCliqueSetReplicaIndex,
+	); err != nil {
+		return groveerr.WrapError(err,
+			errSyncPCSResourceClaim,
+			component.OperationSync,
+			fmt.Sprintf("Error cleaning up stale ResourceClaims for %s", client.ObjectKeyFromObject(pcs)),
+		)
 	}
 	return nil
 }
 
-// Delete triggers deletion of all PCS-level ResourceClaims.
-// AllReplicas RCs are GC'd via owner references when the PCS is deleted.
-// This method handles any explicit cleanup if needed.
+// Delete explicitly deletes all PCS-level ResourceClaims owned by this PodCliqueSet.
+// Required by the finalizer flow: verifyNoResourcesAwaitsCleanup blocks finalizer
+// removal until GetExistingResourceNames returns empty.
 func (r _resource) Delete(ctx context.Context, logger logr.Logger, pcsObjMeta metav1.ObjectMeta) error {
 	names, err := r.GetExistingResourceNames(ctx, logger, pcsObjMeta)
 	if err != nil {

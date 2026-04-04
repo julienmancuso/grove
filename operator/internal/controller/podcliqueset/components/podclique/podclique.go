@@ -30,7 +30,6 @@ import (
 	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
 	"github.com/ai-dynamo/grove/operator/internal/mnnvl"
-	"github.com/ai-dynamo/grove/operator/internal/resourceclaim"
 	"github.com/ai-dynamo/grove/operator/internal/utils"
 	k8sutils "github.com/ai-dynamo/grove/operator/internal/utils/kubernetes"
 
@@ -137,15 +136,12 @@ func (r _resource) createOrUpdatePCLQs(ctx context.Context, logger logr.Logger, 
 				Namespace: pcs.Namespace,
 			}
 			pclqExists := slices.Contains(existingPCLQFQNs, pclqObjectKey.Name)
-			createOrUpdateTask := utils.Task{
-				Name: fmt.Sprintf("CreateOrUpdatePodClique-%s", pclqObjectKey),
-				Fn: func(ctx context.Context) error {
-					if err := r.ensurePCLQResourceClaims(ctx, pcs, pclqObjectKey.Name, expectedPCLQName); err != nil {
-						return err
-					}
-					return r.doCreateOrUpdate(ctx, logger, pcs, pcsReplica, pclqObjectKey, pclqExists)
-				},
-			}
+		createOrUpdateTask := utils.Task{
+			Name: fmt.Sprintf("CreateOrUpdatePodClique-%s", pclqObjectKey),
+			Fn: func(ctx context.Context) error {
+				return r.doCreateOrUpdate(ctx, logger, pcs, pcsReplica, pclqObjectKey, pclqExists)
+			},
+		}
 			tasks = append(tasks, createOrUpdateTask)
 		}
 	}
@@ -159,58 +155,6 @@ func (r _resource) createOrUpdatePCLQs(ctx context.Context, logger logr.Logger, 
 	return nil
 }
 
-// ensurePCLQResourceClaims creates AllReplicas and PerReplica ResourceClaims for a standalone PodClique.
-func (r _resource) ensurePCLQResourceClaims(ctx context.Context, pcs *grovecorev1alpha1.PodCliqueSet, pclqName, pclqTemplateName string) error {
-	pclqTemplateSpec, ok := lo.Find(pcs.Spec.Template.Cliques, func(t *grovecorev1alpha1.PodCliqueTemplateSpec) bool {
-		return t.Name == pclqTemplateName
-	})
-	if !ok || len(pclqTemplateSpec.ResourceSharing) == 0 {
-		return nil
-	}
-
-	// Use the actual PCLQ replica count when available; HPA/KEDA may have
-	// mutated it beyond the PCS template value.
-	currentReplicas := int(pclqTemplateSpec.Spec.Replicas)
-	var existingPCLQ grovecorev1alpha1.PodClique
-	if err := r.client.Get(ctx, client.ObjectKey{Name: pclqName, Namespace: pcs.Namespace}, &existingPCLQ); err == nil {
-		currentReplicas = int(existingPCLQ.Spec.Replicas)
-	}
-
-	labels := resourceclaim.ResourceClaimLabels(pcs.Name)
-	// AllReplicas: one RC per PCLQ instance
-	if err := resourceclaim.EnsureResourceClaims(
-		ctx, r.client,
-		pclqName, pcs.Namespace,
-		pclqTemplateSpec.ResourceSharing,
-		pcs.Spec.Template.ResourceClaimTemplates,
-		labels,
-		pcs, r.scheme,
-		nil,
-	); err != nil {
-		return err
-	}
-	// PerReplica: one RC per PCLQ replica (pod index)
-	for replicaIdx := range currentReplicas {
-		idx := replicaIdx
-		if err := resourceclaim.EnsureResourceClaims(
-			ctx, r.client,
-			pclqName, pcs.Namespace,
-			pclqTemplateSpec.ResourceSharing,
-			pcs.Spec.Template.ResourceClaimTemplates,
-			labels,
-			pcs, r.scheme,
-			&idx,
-		); err != nil {
-			return err
-		}
-	}
-	// Cleanup stale PerReplica RCs from previous higher replica counts
-	return resourceclaim.CleanupStalePerReplicaRCs(
-		ctx, r.client,
-		pclqName, pcs.Namespace, pcs.Name,
-		currentReplicas,
-	)
-}
 
 // triggerDeletionOfPodCliques executes deletion tasks for PodCliques.
 func (r _resource) triggerDeletionOfPodCliques(ctx context.Context, logger logr.Logger, pcsObjKey client.ObjectKey, deletionTasks []utils.Task) error {
@@ -382,12 +326,6 @@ func (r _resource) buildResource(logger logr.Logger, pclq *grovecorev1alpha1.Pod
 	if mnnvl.IsAutoMNNVLEnabled(pcs.Annotations) {
 		mnnvl.InjectMNNVLIntoPodSpec(logger, &pclq.Spec.PodSpec, apicommon.ResourceNameReplica{Name: pcs.Name, Replica: pcsReplica})
 	}
-
-	// Inject PCS-level ResourceClaim refs (AllReplicas + PerReplica), filtering by filter
-	resourceclaim.InjectResourceClaimRefs(&pclq.Spec.PodSpec, pcs.Name, pcs.Spec.Template.ResourceSharing, nil, pclqTemplateSpec.Name)
-	resourceclaim.InjectResourceClaimRefs(&pclq.Spec.PodSpec, pcs.Name, pcs.Spec.Template.ResourceSharing, &pcsReplica, pclqTemplateSpec.Name)
-	// Inject PCLQ-level AllReplicas ResourceClaim refs
-	resourceclaim.InjectResourceClaimRefs(&pclq.Spec.PodSpec, pclq.Name, pclqTemplateSpec.ResourceSharing, nil)
 
 	return nil
 }

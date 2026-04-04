@@ -32,6 +32,7 @@ import (
 	"github.com/ai-dynamo/grove/operator/e2e/utils"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/yaml"
 )
@@ -251,6 +252,7 @@ func CollectAllDiagnostics(tc TestContext) {
 	// Collect each type of diagnostic, continuing even if one fails
 	dumpOperatorLogs(tc, logger)
 	dumpGroveResources(tc, logger)
+	dumpResourceClaims(tc, logger)
 	dumpPodDetails(tc, logger)
 	dumpRecentEvents(tc, logger)
 
@@ -559,6 +561,83 @@ func dumpRecentEvents(tc TestContext, logger *utils.Logger) {
 			truncateString(event.Reason, 25),
 			truncateString(objectRef, 35),
 			message)
+	}
+}
+
+// dumpResourceClaims dumps a compact summary of all ResourceClaims in the namespace,
+// focusing on the labels that distinguish ownership scope (PCS, PCSG, PCLQ levels).
+func dumpResourceClaims(tc TestContext, logger *utils.Logger) {
+	logger.Info("================================================================================")
+	logger.Info("=== RESOURCE CLAIMS ===")
+	logger.Info("================================================================================")
+
+	if tc.DynamicClient == nil {
+		logger.Info("[DIAG] DynamicClient is nil, cannot list ResourceClaims")
+		return
+	}
+
+	rcGVR := schema.GroupVersionResource{Group: "resource.k8s.io", Version: "v1", Resource: "resourceclaims"}
+	rcList, err := tc.DynamicClient.Resource(rcGVR).Namespace(tc.Namespace).List(tc.Ctx, metav1.ListOptions{})
+	if err != nil {
+		logger.Infof("[DIAG] Failed to list ResourceClaims: %v", err)
+		return
+	}
+	if len(rcList.Items) == 0 {
+		logger.Infof("[DIAG] No ResourceClaims found in namespace %s", tc.Namespace)
+		return
+	}
+
+	logger.Infof("[DIAG] Found %d ResourceClaims in namespace %s", len(rcList.Items), tc.Namespace)
+
+	// Key label short names for compact display
+	type rcLabel struct{ key, short string }
+	scopeLabels := []rcLabel{
+		{"grove.io/podcliqueset-replica-index", "pcs-idx"},
+		{"grove.io/podcliquescalinggroup", "pcsg"},
+		{"grove.io/podcliquescalinggroup-replica-index", "pcsg-idx"},
+		{"grove.io/podclique", "pclq"},
+		{"grove.io/podclique-pod-index", "pod-idx"},
+	}
+
+	// Sort by name for stable output
+	sort.Slice(rcList.Items, func(i, j int) bool {
+		return rcList.Items[i].GetName() < rcList.Items[j].GetName()
+	})
+
+	logger.Infof("%-45s %-7s %-22s %-8s %-20s %-7s  %s", "NAME", "PCS-IDX", "PCSG", "PCSG-IDX", "PCLQ", "POD-IDX", "OWNER")
+	logger.Info(strings.Repeat("-", 160))
+
+	for _, rc := range rcList.Items {
+		labels := rc.GetLabels()
+
+		vals := make([]string, len(scopeLabels))
+		for i, sl := range scopeLabels {
+			if v, ok := labels[sl.key]; ok {
+				vals[i] = v
+			} else {
+				vals[i] = "-"
+			}
+		}
+
+		owner := "-"
+		ownerRefs, _, _ := unstructured.NestedSlice(rc.Object, "metadata", "ownerReferences")
+		if len(ownerRefs) > 0 {
+			if ref, ok := ownerRefs[0].(map[string]interface{}); ok {
+				kind, _ := ref["kind"].(string)
+				name, _ := ref["name"].(string)
+				owner = fmt.Sprintf("%s/%s", kind, name)
+			}
+		}
+
+		logger.Infof("%-45s %-7s %-22s %-8s %-20s %-7s  %s",
+			truncateString(rc.GetName(), 45),
+			vals[0], // pcs-idx
+			truncateString(vals[1], 22), // pcsg
+			vals[2], // pcsg-idx
+			truncateString(vals[3], 20), // pclq
+			vals[4], // pod-idx
+			owner,
+		)
 	}
 }
 

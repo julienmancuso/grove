@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
-	"strings"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
 	grovecorev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
@@ -28,7 +27,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/selection"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
@@ -193,10 +194,21 @@ func FindPCSGConfig(
 	pcsg *grovecorev1alpha1.PodCliqueScalingGroup,
 	pcsReplicaIndex int,
 ) *grovecorev1alpha1.PodCliqueScalingGroupConfig {
+	return FindPCSGConfigByName(pcs, pcsg.Name, pcsReplicaIndex)
+}
+
+// FindPCSGConfigByName finds the matching PodCliqueScalingGroupConfig by PCSG name
+// without requiring the full PCSG object. This is useful in contexts (e.g. the pod
+// component) where only the PCSG name is available from labels.
+func FindPCSGConfigByName(
+	pcs *grovecorev1alpha1.PodCliqueSet,
+	pcsgName string,
+	pcsReplicaIndex int,
+) *grovecorev1alpha1.PodCliqueScalingGroupConfig {
 	pcsNameReplica := apicommon.ResourceNameReplica{Name: pcs.Name, Replica: pcsReplicaIndex}
 	for i := range pcs.Spec.Template.PodCliqueScalingGroupConfigs {
 		cfg := &pcs.Spec.Template.PodCliqueScalingGroupConfigs[i]
-		if apicommon.GeneratePodCliqueScalingGroupName(pcsNameReplica, cfg.Name) == pcsg.Name {
+		if apicommon.GeneratePodCliqueScalingGroupName(pcsNameReplica, cfg.Name) == pcsgName {
 			return cfg
 		}
 	}
@@ -227,89 +239,45 @@ func DeletePerReplicaRCs(
 	return nil
 }
 
-// DeleteAllRCsWithPrefix lists all ResourceClaims for the PCS and deletes
-// any whose name starts with the given prefix. This is used during PCSG
-// scale-in to remove all RCs (AllReplicas + PerReplica) for PCLQs that
-// belonged to a deleted PCSG replica.
-func DeleteAllRCsWithPrefix(
-	ctx context.Context,
-	cl client.Client,
-	prefix, namespace, pcsName string,
-) error {
-	rcList := &resourcev1.ResourceClaimList{}
-	if err := cl.List(ctx, rcList,
-		client.InNamespace(namespace),
-		client.MatchingLabels(ResourceClaimLabels(pcsName)),
-	); err != nil {
-		return fmt.Errorf("failed to list ResourceClaims for prefix cleanup: %w", err)
-	}
-
-	var errs []error
-	for _, rc := range rcList.Items {
-		if strings.HasPrefix(rc.Name, prefix) {
-			if err := DeleteResourceClaim(ctx, cl, rc.Name, namespace); err != nil {
-				errs = append(errs, fmt.Errorf("delete RC %q: %w", rc.Name, err))
-			}
-		}
-	}
-	if len(errs) > 0 {
-		return fmt.Errorf("failed to delete RCs with prefix %q: %w", prefix, errors.Join(errs...))
-	}
-	return nil
-}
-
-// CleanupStalePerReplicaRCs lists all ResourceClaims for the PCS and deletes
-// PerReplica-scoped ones whose replica index >= currentReplicas for the given
-// owner. This handles scale-in for any owner level (standalone PCLQ, PCSG, etc.)
-// where the previous replica count is not known upfront.
+// CleanupStalePerReplicaRCs deletes stale PerReplica ResourceClaims in a single
+// server-side DeleteCollection call. It builds a unified label selector that
+// combines the matchLabels equality requirements with Exists + NotIn on the
+// given replicaIndexLabel to target only RCs whose replica index >= currentReplicas.
+// All requirements are merged into a single MatchingLabelsSelector to avoid
+// issues with MatchingLabels + MatchingLabelsSelector option merging in
+// controller-runtime's DeleteAllOf / List.
 func CleanupStalePerReplicaRCs(
 	ctx context.Context,
 	cl client.Client,
-	ownerName, namespace, pcsName string,
+	namespace string,
+	matchLabels map[string]string,
 	currentReplicas int,
+	replicaIndexLabel string,
 ) error {
-	rcList := &resourcev1.ResourceClaimList{}
-	if err := cl.List(ctx, rcList,
-		client.InNamespace(namespace),
-		client.MatchingLabels(ResourceClaimLabels(pcsName)),
-	); err != nil {
-		return fmt.Errorf("failed to list ResourceClaims for cleanup: %w", err)
-	}
-
-	var errs []error
-	for _, rc := range rcList.Items {
-		if IsStalePerReplicaRC(ownerName, currentReplicas, rc.Name) {
-			if err := DeleteResourceClaim(ctx, cl, rc.Name, namespace); err != nil {
-				errs = append(errs, fmt.Errorf("delete RC %q: %w", rc.Name, err))
-			}
-		}
-	}
-	if len(errs) > 0 {
-		return fmt.Errorf("failed to cleanup stale PerReplica RCs: %w", errors.Join(errs...))
-	}
-	return nil
-}
-
-// IsStalePerReplicaRC returns true if rcName matches the pattern
-// "<prefix>-<N>-<rctName>" where N >= currentReplicas.
-// The "all" segment (used by AllReplicas-scope RCs) is never considered stale.
-func IsStalePerReplicaRC(prefix string, currentReplicas int, rcName string) bool {
-	pfx := prefix + "-"
-	if !strings.HasPrefix(rcName, pfx) {
-		return false
-	}
-	rest := rcName[len(pfx):]
-	dashIdx := strings.Index(rest, "-")
-	if dashIdx <= 0 {
-		return false
-	}
-	seg := rest[:dashIdx]
-	if seg == "all" {
-		return false
-	}
-	repIdx, err := strconv.Atoi(seg)
+	// Build a single unified selector that includes both the matchLabels
+	// equality requirements and the stale-replica set-based requirements.
+	sel := labels.SelectorFromValidatedSet(labels.Set(matchLabels))
+	existsReq, err := labels.NewRequirement(replicaIndexLabel, selection.Exists, nil)
 	if err != nil {
-		return false
+		return fmt.Errorf("build Exists requirement: %w", err)
 	}
-	return repIdx >= currentReplicas
+	sel = sel.Add(*existsReq)
+
+	if currentReplicas > 0 {
+		validIndices := make([]string, currentReplicas)
+		for i := range currentReplicas {
+			validIndices[i] = strconv.Itoa(i)
+		}
+		notInReq, err := labels.NewRequirement(replicaIndexLabel, selection.NotIn, validIndices)
+		if err != nil {
+			return fmt.Errorf("build NotIn requirement: %w", err)
+		}
+		sel = sel.Add(*notInReq)
+	}
+
+	return cl.DeleteAllOf(ctx, &resourcev1.ResourceClaim{},
+		client.InNamespace(namespace),
+		client.MatchingLabelsSelector{Selector: sel},
+	)
 }
+

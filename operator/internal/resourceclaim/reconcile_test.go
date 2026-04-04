@@ -16,6 +16,7 @@ package resourceclaim
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	apicommon "github.com/ai-dynamo/grove/operator/api/common"
@@ -236,6 +237,44 @@ func TestFindPCSGConfig(t *testing.T) {
 	})
 }
 
+// --- FindPCSGConfigByName ---
+
+func TestFindPCSGConfigByName(t *testing.T) {
+	pcs := &grovecorev1alpha1.PodCliqueSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-pcs"},
+		Spec: grovecorev1alpha1.PodCliqueSetSpec{
+			Template: grovecorev1alpha1.PodCliqueSetTemplateSpec{
+				PodCliqueScalingGroupConfigs: []grovecorev1alpha1.PodCliqueScalingGroupConfig{
+					{Name: "sga"},
+					{Name: "sgb"},
+				},
+			},
+		},
+	}
+
+	t.Run("match found by name", func(t *testing.T) {
+		cfg := FindPCSGConfigByName(pcs, "my-pcs-0-sga", 0)
+		require.NotNil(t, cfg)
+		assert.Equal(t, "sga", cfg.Name)
+	})
+
+	t.Run("no match", func(t *testing.T) {
+		cfg := FindPCSGConfigByName(pcs, "my-pcs-0-nonexistent", 0)
+		assert.Nil(t, cfg)
+	})
+
+	t.Run("consistent with FindPCSGConfig", func(t *testing.T) {
+		pcsg := &grovecorev1alpha1.PodCliqueScalingGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-pcs-1-sgb"},
+		}
+		byObj := FindPCSGConfig(pcs, pcsg, 1)
+		byName := FindPCSGConfigByName(pcs, "my-pcs-1-sgb", 1)
+		require.NotNil(t, byObj)
+		require.NotNil(t, byName)
+		assert.Equal(t, byObj.Name, byName.Name)
+	})
+}
+
 // --- EnsureResourceClaim ---
 
 func TestEnsureResourceClaim(t *testing.T) {
@@ -435,93 +474,65 @@ func TestDeleteResourceClaim(t *testing.T) {
 
 func TestCleanupStalePerReplicaRCs(t *testing.T) {
 	scheme := newTestScheme()
-	labels := ResourceClaimLabels("my-pcs")
+	baseLabels := ResourceClaimLabels("my-pcs")
+
+	rcWithIndex := func(name, ns string, replicaIndex int) *resourcev1.ResourceClaim {
+		l := make(map[string]string, len(baseLabels)+1)
+		for k, v := range baseLabels {
+			l[k] = v
+		}
+		l[apicommon.LabelPodCliqueSetReplicaIndex] = fmt.Sprintf("%d", replicaIndex)
+		return &resourcev1.ResourceClaim{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: l}}
+	}
+	rcAllReplicas := func(name, ns string) *resourcev1.ResourceClaim {
+		return &resourcev1.ResourceClaim{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: baseLabels}}
+	}
 
 	t.Run("deletes stale PerReplica RCs after scale-in", func(t *testing.T) {
 		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
-			&resourcev1.ResourceClaim{ObjectMeta: metav1.ObjectMeta{Name: "my-pcs-worker-all-gpu", Namespace: "ns", Labels: labels}},
-			&resourcev1.ResourceClaim{ObjectMeta: metav1.ObjectMeta{Name: "my-pcs-worker-0-gpu", Namespace: "ns", Labels: labels}},
-			&resourcev1.ResourceClaim{ObjectMeta: metav1.ObjectMeta{Name: "my-pcs-worker-1-gpu", Namespace: "ns", Labels: labels}},
-			&resourcev1.ResourceClaim{ObjectMeta: metav1.ObjectMeta{Name: "my-pcs-worker-2-gpu", Namespace: "ns", Labels: labels}},
+			rcAllReplicas("my-pcs-all-gpu", "ns"),
+			rcWithIndex("my-pcs-0-gpu", "ns", 0),
+			rcWithIndex("my-pcs-1-gpu", "ns", 1),
+			rcWithIndex("my-pcs-2-gpu", "ns", 2),
 		).Build()
 
-		err := CleanupStalePerReplicaRCs(context.Background(), cl, "my-pcs-worker", "ns", "my-pcs", 2)
+		err := CleanupStalePerReplicaRCs(context.Background(), cl, "ns", baseLabels, 2, apicommon.LabelPodCliqueSetReplicaIndex)
 		require.NoError(t, err)
 
 		rc := &resourcev1.ResourceClaim{}
-		assert.NoError(t, cl.Get(context.Background(), types.NamespacedName{Name: "my-pcs-worker-all-gpu", Namespace: "ns"}, rc))
-		assert.NoError(t, cl.Get(context.Background(), types.NamespacedName{Name: "my-pcs-worker-0-gpu", Namespace: "ns"}, rc))
-		assert.NoError(t, cl.Get(context.Background(), types.NamespacedName{Name: "my-pcs-worker-1-gpu", Namespace: "ns"}, rc))
-		assert.Error(t, cl.Get(context.Background(), types.NamespacedName{Name: "my-pcs-worker-2-gpu", Namespace: "ns"}, rc))
+		assert.NoError(t, cl.Get(context.Background(), types.NamespacedName{Name: "my-pcs-all-gpu", Namespace: "ns"}, rc))
+		assert.NoError(t, cl.Get(context.Background(), types.NamespacedName{Name: "my-pcs-0-gpu", Namespace: "ns"}, rc))
+		assert.NoError(t, cl.Get(context.Background(), types.NamespacedName{Name: "my-pcs-1-gpu", Namespace: "ns"}, rc))
+		assert.Error(t, cl.Get(context.Background(), types.NamespacedName{Name: "my-pcs-2-gpu", Namespace: "ns"}, rc))
 	})
 
 	t.Run("handles scale-to-zero", func(t *testing.T) {
 		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
-			&resourcev1.ResourceClaim{ObjectMeta: metav1.ObjectMeta{Name: "my-pcs-worker-all-gpu", Namespace: "ns", Labels: labels}},
-			&resourcev1.ResourceClaim{ObjectMeta: metav1.ObjectMeta{Name: "my-pcs-worker-0-gpu", Namespace: "ns", Labels: labels}},
-			&resourcev1.ResourceClaim{ObjectMeta: metav1.ObjectMeta{Name: "my-pcs-worker-1-gpu", Namespace: "ns", Labels: labels}},
+			rcAllReplicas("my-pcs-all-gpu", "ns"),
+			rcWithIndex("my-pcs-0-gpu", "ns", 0),
+			rcWithIndex("my-pcs-1-gpu", "ns", 1),
 		).Build()
 
-		err := CleanupStalePerReplicaRCs(context.Background(), cl, "my-pcs-worker", "ns", "my-pcs", 0)
+		err := CleanupStalePerReplicaRCs(context.Background(), cl, "ns", baseLabels, 0, apicommon.LabelPodCliqueSetReplicaIndex)
 		require.NoError(t, err)
 
 		rc := &resourcev1.ResourceClaim{}
-		assert.NoError(t, cl.Get(context.Background(), types.NamespacedName{Name: "my-pcs-worker-all-gpu", Namespace: "ns"}, rc), "AllReplicas RC should survive")
-		assert.Error(t, cl.Get(context.Background(), types.NamespacedName{Name: "my-pcs-worker-0-gpu", Namespace: "ns"}, rc))
-		assert.Error(t, cl.Get(context.Background(), types.NamespacedName{Name: "my-pcs-worker-1-gpu", Namespace: "ns"}, rc))
-	})
-
-	t.Run("does not touch other owners' RCs", func(t *testing.T) {
-		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
-			&resourcev1.ResourceClaim{ObjectMeta: metav1.ObjectMeta{Name: "my-pcs-worker-2-gpu", Namespace: "ns", Labels: labels}},
-			&resourcev1.ResourceClaim{ObjectMeta: metav1.ObjectMeta{Name: "my-pcs-router-2-gpu", Namespace: "ns", Labels: labels}},
-		).Build()
-
-		err := CleanupStalePerReplicaRCs(context.Background(), cl, "my-pcs-worker", "ns", "my-pcs", 1)
-		require.NoError(t, err)
-
-		rc := &resourcev1.ResourceClaim{}
-		assert.Error(t, cl.Get(context.Background(), types.NamespacedName{Name: "my-pcs-worker-2-gpu", Namespace: "ns"}, rc), "stale worker RC deleted")
-		assert.NoError(t, cl.Get(context.Background(), types.NamespacedName{Name: "my-pcs-router-2-gpu", Namespace: "ns"}, rc), "router RC untouched")
+		assert.NoError(t, cl.Get(context.Background(), types.NamespacedName{Name: "my-pcs-all-gpu", Namespace: "ns"}, rc), "AllReplicas RC should survive")
+		assert.Error(t, cl.Get(context.Background(), types.NamespacedName{Name: "my-pcs-0-gpu", Namespace: "ns"}, rc))
+		assert.Error(t, cl.Get(context.Background(), types.NamespacedName{Name: "my-pcs-1-gpu", Namespace: "ns"}, rc))
 	})
 
 	t.Run("noop when no stale RCs exist", func(t *testing.T) {
 		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
-			&resourcev1.ResourceClaim{ObjectMeta: metav1.ObjectMeta{Name: "my-pcs-worker-0-gpu", Namespace: "ns", Labels: labels}},
+			rcWithIndex("my-pcs-0-gpu", "ns", 0),
 		).Build()
 
-		err := CleanupStalePerReplicaRCs(context.Background(), cl, "my-pcs-worker", "ns", "my-pcs", 5)
+		err := CleanupStalePerReplicaRCs(context.Background(), cl, "ns", baseLabels, 5, apicommon.LabelPodCliqueSetReplicaIndex)
 		require.NoError(t, err)
 
 		rc := &resourcev1.ResourceClaim{}
-		assert.NoError(t, cl.Get(context.Background(), types.NamespacedName{Name: "my-pcs-worker-0-gpu", Namespace: "ns"}, rc))
+		assert.NoError(t, cl.Get(context.Background(), types.NamespacedName{Name: "my-pcs-0-gpu", Namespace: "ns"}, rc))
 	})
-}
-
-// --- IsStalePerReplicaRC ---
-
-func TestIsStalePerReplicaRC(t *testing.T) {
-	tests := []struct {
-		name            string
-		ownerName       string
-		currentReplicas int
-		rcName          string
-		want            bool
-	}{
-		{"AllReplicas never stale", "owner", 0, "owner-all-gpu", false},
-		{"current replica index", "owner", 2, "owner-0-gpu", false},
-		{"boundary replica index", "owner", 2, "owner-1-gpu", false},
-		{"stale replica index", "owner", 2, "owner-2-gpu", true},
-		{"higher stale index", "owner", 2, "owner-5-gpu", true},
-		{"unrelated RC name", "owner", 0, "other-0-gpu", false},
-		{"no trailing segment", "owner", 0, "owner-0", false},
-		{"non-numeric segment", "owner", 0, "owner-abc-gpu", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, IsStalePerReplicaRC(tt.ownerName, tt.currentReplicas, tt.rcName))
-		})
-	}
 }
 
 // Ensure ptr.To works for tests that need int pointer

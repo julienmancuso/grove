@@ -32,7 +32,6 @@ import (
 	componentutils "github.com/ai-dynamo/grove/operator/internal/controller/common/component/utils"
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
 	"github.com/ai-dynamo/grove/operator/internal/mnnvl"
-	"github.com/ai-dynamo/grove/operator/internal/resourceclaim"
 	"github.com/ai-dynamo/grove/operator/internal/utils"
 	k8sutils "github.com/ai-dynamo/grove/operator/internal/utils/kubernetes"
 
@@ -63,6 +62,7 @@ const (
 	errCodeUpdateStatus                                  grovecorev1alpha1.ErrorCode = "ERR_UPDATE_STATUS"
 	errCodeComputePendingPodCliqueScalingGroupUpdateWork grovecorev1alpha1.ErrorCode = "ERR_COMPUTE_PENDINGUPDATE_WORK"
 	errCodeCreateOrUpdatePodCliques                      grovecorev1alpha1.ErrorCode = "ERR_CREATE_OR_UPDATE_PODCLIQUES"
+	errCodeSyncPCSGResourceClaim                         grovecorev1alpha1.ErrorCode = "ERR_SYNC_PCSG_RESOURCE_CLAIM"
 )
 
 var (
@@ -336,24 +336,6 @@ func (r _resource) buildResource(logger logr.Logger, pcs *grovecorev1alpha1.PodC
 	if mnnvl.IsAutoMNNVLEnabled(pcsg.Annotations) {
 		mnnvl.InjectMNNVLIntoPodSpec(logger, &pclq.Spec.PodSpec, apicommon.ResourceNameReplica{Name: pcs.Name, Replica: pcsReplicaIndex})
 	}
-
-	// Inject PCS-level ResourceClaim refs (AllReplicas + PerReplica), filtering by filter
-	pcsgConfig := resourceclaim.FindPCSGConfig(pcs, pcsg, pcsReplicaIndex)
-	pcsgConfigName := ""
-	if pcsgConfig != nil {
-		pcsgConfigName = pcsgConfig.Name
-	}
-	resourceclaim.InjectResourceClaimRefs(&pclq.Spec.PodSpec, pcs.Name, pcs.Spec.Template.ResourceSharing, nil, pclqTemplateSpec.Name, pcsgConfigName)
-	resourceclaim.InjectResourceClaimRefs(&pclq.Spec.PodSpec, pcs.Name, pcs.Spec.Template.ResourceSharing, &pcsReplicaIndex, pclqTemplateSpec.Name, pcsgConfigName)
-
-	// Inject PCSG-level ResourceClaim refs (AllReplicas + PerReplica), filtering by filter
-	if pcsgConfig != nil && len(pcsgConfig.ResourceSharing) > 0 {
-		resourceclaim.InjectResourceClaimRefs(&pclq.Spec.PodSpec, pcsg.Name, pcsgConfig.ResourceSharing, nil, pclqTemplateSpec.Name)
-		resourceclaim.InjectResourceClaimRefs(&pclq.Spec.PodSpec, pcsg.Name, pcsgConfig.ResourceSharing, &pcsgReplicaIndex, pclqTemplateSpec.Name)
-	}
-
-	// Inject PCLQ-level AllReplicas ResourceClaim refs
-	resourceclaim.InjectResourceClaimRefs(&pclq.Spec.PodSpec, pclq.Name, pclqTemplateSpec.ResourceSharing, nil)
 
 	return nil
 }
