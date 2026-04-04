@@ -280,4 +280,3 @@ func CleanupStalePerReplicaRCs(
 		client.MatchingLabelsSelector{Selector: sel},
 	)
 }
-

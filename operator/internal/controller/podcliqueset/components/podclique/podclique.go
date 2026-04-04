@@ -136,12 +136,12 @@ func (r _resource) createOrUpdatePCLQs(ctx context.Context, logger logr.Logger, 
 				Namespace: pcs.Namespace,
 			}
 			pclqExists := slices.Contains(existingPCLQFQNs, pclqObjectKey.Name)
-		createOrUpdateTask := utils.Task{
-			Name: fmt.Sprintf("CreateOrUpdatePodClique-%s", pclqObjectKey),
-			Fn: func(ctx context.Context) error {
-				return r.doCreateOrUpdate(ctx, logger, pcs, pcsReplica, pclqObjectKey, pclqExists)
-			},
-		}
+			createOrUpdateTask := utils.Task{
+				Name: fmt.Sprintf("CreateOrUpdatePodClique-%s", pclqObjectKey),
+				Fn: func(ctx context.Context) error {
+					return r.doCreateOrUpdate(ctx, logger, pcs, pcsReplica, pclqObjectKey, pclqExists)
+				},
+			}
 			tasks = append(tasks, createOrUpdateTask)
 		}
 	}
@@ -154,7 +154,6 @@ func (r _resource) createOrUpdatePCLQs(ctx context.Context, logger logr.Logger, 
 	}
 	return nil
 }
-
 
 // triggerDeletionOfPodCliques executes deletion tasks for PodCliques.
 func (r _resource) triggerDeletionOfPodCliques(ctx context.Context, logger logr.Logger, pcsObjKey client.ObjectKey, deletionTasks []utils.Task) error {
