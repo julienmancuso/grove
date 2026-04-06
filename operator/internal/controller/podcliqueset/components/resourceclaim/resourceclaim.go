@@ -159,32 +159,19 @@ func (r _resource) cleanupStaleResourceClaims(ctx context.Context, _ logr.Logger
 	return nil
 }
 
-// Delete explicitly deletes all PCS-level ResourceClaims owned by this PodCliqueSet.
-// Required by the finalizer flow: verifyNoResourcesAwaitsCleanup blocks finalizer
-// removal until GetExistingResourceNames returns empty.
-func (r _resource) Delete(ctx context.Context, logger logr.Logger, pcsObjMeta metav1.ObjectMeta) error {
-	names, err := r.GetExistingResourceNames(ctx, logger, pcsObjMeta)
-	if err != nil {
-		return err
-	}
-	var tasks []utils.Task
-	for _, name := range names {
-		rcName := name
-		tasks = append(tasks, utils.Task{
-			Name: fmt.Sprintf("DeletePCSResourceClaim-%s", rcName),
-			Fn: func(ctx context.Context) error {
-				return resourceclaim.DeleteResourceClaim(ctx, r.client, rcName, pcsObjMeta.Namespace)
-			},
-		})
-	}
-	if len(tasks) > 0 {
-		if runResult := utils.RunConcurrently(ctx, logger, tasks); runResult.HasErrors() {
-			return groveerr.WrapError(runResult.GetAggregatedError(),
-				errDeletePCSResourceClaim,
-				component.OperationDelete,
-				fmt.Sprintf("Error deleting PCS-level ResourceClaims for %s/%s", pcsObjMeta.Namespace, pcsObjMeta.Name),
-			)
-		}
+// Delete deletes all ResourceClaims associated with this PodCliqueSet (across all
+// levels: PCS, PCSG, and PCLQ). This is safe because Delete is only called during
+// PCS deletion when the entire hierarchy is being torn down.
+func (r _resource) Delete(ctx context.Context, _ logr.Logger, pcsObjMeta metav1.ObjectMeta) error {
+	if err := r.client.DeleteAllOf(ctx, &resourcev1.ResourceClaim{},
+		client.InNamespace(pcsObjMeta.Namespace),
+		client.MatchingLabels(resourceclaim.ResourceClaimLabels(pcsObjMeta.Name)),
+	); err != nil {
+		return groveerr.WrapError(err,
+			errDeletePCSResourceClaim,
+			component.OperationDelete,
+			fmt.Sprintf("Error deleting ResourceClaims for %s/%s", pcsObjMeta.Namespace, pcsObjMeta.Name),
+		)
 	}
 	return nil
 }
