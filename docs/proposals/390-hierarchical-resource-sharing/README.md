@@ -483,6 +483,41 @@ In this example:
 - Both `prefill-wkr` and `decode-wkr` reference the same external GPU template (no spec duplication)
 - The PCSG references the internal NVSwitch template with `PerReplica` scope
 
+**ResourceClaims created by Grove** for this example (PCS name `disagg`, 1 PCS replica, 2 PCSG replicas):
+
+```
+PCLQ AllReplicas (1 per PCLQ, per PCS replica — external template):
+  disagg-0-prefill-wkr-all-gb200-gpu-pool   → shared by all prefill-wkr pods in PCS replica 0
+  disagg-0-decode-wkr-all-gb200-gpu-pool    → shared by all decode-wkr pods in PCS replica 0
+
+PCSG PerReplica (1 per PCSG replica, per PCS replica — internal template):
+  disagg-0-model-instance-0-nvswitch-fabric  → shared by all pods in PCSG replica 0, PCS replica 0
+  disagg-0-model-instance-1-nvswitch-fabric  → shared by all pods in PCSG replica 1, PCS replica 0
+```
+
+**Pod spec snippet** showing how Grove injects the claim references into a prefill-wkr pod in
+PCSG replica 0, PCS replica 0:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: disagg-0-model-instance-0-prefill-wkr-0
+spec:
+  resourceClaims:
+    - name: disagg-0-prefill-wkr-all-gb200-gpu-pool
+      resourceClaimName: disagg-0-prefill-wkr-all-gb200-gpu-pool
+    - name: disagg-0-model-instance-0-nvswitch-fabric
+      resourceClaimName: disagg-0-model-instance-0-nvswitch-fabric
+  containers:
+    - name: prefill
+      image: nvidia/cuda:12.0-runtime
+      resources:
+        claims:
+          - name: disagg-0-prefill-wkr-all-gb200-gpu-pool
+          - name: disagg-0-model-instance-0-nvswitch-fabric
+```
+
 See [ResourceClaim Naming Convention](#resourceclaim-naming-convention) for the deterministic naming scheme and
 [Owner References and Garbage Collection](#owner-references-and-garbage-collection) for lifecycle semantics.
 
