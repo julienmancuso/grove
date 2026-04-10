@@ -1,32 +1,32 @@
 # Hierarchical Resource Sharing
 
 <!-- toc -->
-  - [Summary](#summary)
-  - [Motivation](#motivation)
-    - [The Need for Multiple Sharing Scopes](#the-need-for-multiple-sharing-scopes)
-    - [Goals](#goals)
-  - [Proposal](#proposal)
-    - [User Stories](#user-stories)
-      - [Story 1: Disaggregated Inference with Multi-Level Resource Sharing](#story-1-disaggregated-inference-with-multi-level-resource-sharing)
-      - [Story 2: Multi-Stage Training Pipeline with GPU Sharing](#story-2-multi-stage-training-pipeline-with-gpu-sharing)
-    - [Limitations/Risks &amp; Mitigations](#limitationsrisks--mitigations)
-  - [Design Details](#design-details)
-    - [Common Types](#common-types)
-  - [count: 8](#count-8)
-- [--- PodCliqueSet using both internal and external references ---](#----podcliqueset-using-both-internal-and-external-references----)
-    - [PodClique-Level Resource Sharing](#podclique-level-resource-sharing)
-    - [PodCliqueScalingGroup-Level Resource Sharing](#podcliquescalinggroup-level-resource-sharing)
-    - [ResourceClaim Naming Convention](#resourceclaim-naming-convention)
-    - [Owner References and Garbage Collection](#owner-references-and-garbage-collection)
-    - [Monitoring](#monitoring)
-    - [Dependencies](#dependencies)
-    - [Test Plan](#test-plan)
-    - [Graduation Criteria](#graduation-criteria)
-  - [Implementation History](#implementation-history)
-  - [Alternatives](#alternatives)
-  - [Appendix](#appendix)
-    - [Follow-up: Common <code>NamespacedName</code> type](#follow-up-common-namespacedname-type)
-    - [DRA Background](#dra-background)
+- [Summary](#summary)
+- [Motivation](#motivation)
+  - [The Need for Multiple Sharing Scopes](#the-need-for-multiple-sharing-scopes)
+  - [Goals](#goals)
+- [Proposal](#proposal)
+  - [User Stories](#user-stories)
+    - [Story 1: Disaggregated Inference with Multi-Level Resource Sharing](#story-1-disaggregated-inference-with-multi-level-resource-sharing)
+    - [Story 2: Multi-Stage Training Pipeline with GPU Sharing](#story-2-multi-stage-training-pipeline-with-gpu-sharing)
+  - [Limitations/Risks &amp; Mitigations](#limitationsrisks--mitigations)
+- [Design Details](#design-details)
+  - [Common Types](#common-types)
+    - [ResourceClaimTemplate Referencing](#resourceclaimtemplate-referencing)
+  - [PodCliqueSet-Level Resource Sharing](#podcliqueset-level-resource-sharing)
+  - [PodClique-Level Resource Sharing](#podclique-level-resource-sharing)
+  - [PodCliqueScalingGroup-Level Resource Sharing](#podcliquescalinggroup-level-resource-sharing)
+  - [ResourceClaim Naming Convention](#resourceclaim-naming-convention)
+  - [Owner References and Garbage Collection](#owner-references-and-garbage-collection)
+  - [Immutability of Resource Sharing Fields](#immutability-of-resource-sharing-fields)
+  - [Dependencies](#dependencies)
+  - [Test Plan](#test-plan)
+  - [Graduation Criteria](#graduation-criteria)
+- [Implementation History](#implementation-history)
+- [Alternatives](#alternatives)
+- [Appendix](#appendix)
+  - [Follow-up: Common <code>NamespacedName</code> type](#follow-up-common-namespacedname-type)
+  - [DRA Background](#dra-background)
 <!-- /toc -->
 
 ## Summary
@@ -47,7 +47,7 @@ A new `resourceSharing` field is available at three levels:
 * **PodCliqueScalingGroup level** — resources shared across an entire PCSG or scoped per PCSG replica,
   with optional filtering to target specific PodCliques.
 
-At each level, users choose whether a resource is shared across all replicas or dedicated per replica.
+At each level, users choose whether a resource is shared across all replicas or scoped per replica.
 This enables composable, multi-level resource sharing while giving users fine-grained scope control
 at every hierarchy level.
 
@@ -281,7 +281,7 @@ _Solution_: By leveraging GPU sharing technologies like [NVIDIA Multi-Process Se
   managed `ResourceClaim` directly. This means platform teams cannot wire an already-allocated claim
   (e.g., a dedicated GPU partition provisioned by a separate system or manually by an admin) into the
   Grove hierarchy without creating a `ResourceClaimTemplate` that produces an equivalent claim.
-  A future extension could add an optional `resourceClaimName` field to `ResourceSharingSpec` as an
+  A future extension could add an optional `resourceClaimName` field to `ResourceSharingSpecBase` as an
   alternative to template-based creation, allowing Grove to inject existing claims into pod specs
   without owning their lifecycle.
 
@@ -308,7 +308,7 @@ const (
 )
 
 // ResourceClaimTemplateConfig defines a named ResourceClaimTemplateSpec that can be
-// referenced by ResourceSharingSpec entries in resourceSharing fields.
+// referenced by name from resourceSharing fields at any level.
 type ResourceClaimTemplateConfig struct {
 	// Name is a unique identifier for this template within the PodCliqueSet.
 	Name string `json:"name"`
@@ -316,9 +316,10 @@ type ResourceClaimTemplateConfig struct {
 	TemplateSpec resourcev1.ResourceClaimTemplateSpec `json:"templateSpec"`
 }
 
-// ResourceSharingSpec references a ResourceClaimTemplateSpec and defines the
-// sharing scope for the resulting ResourceClaim(s).
-type ResourceSharingSpec struct {
+// ResourceSharingSpecBase contains the common fields shared by all levels of
+// resource sharing (PCS, PCSG, PCLQ). It is used directly for PCLQ-level
+// resource sharing where no filter is needed.
+type ResourceSharingSpecBase struct {
 	// Name of the referenced template. Resolved by first looking up
 	// PodCliqueSetTemplateSpec.ResourceClaimTemplates; if no match is found,
 	// the operator looks for a Kubernetes ResourceClaimTemplate object in the
@@ -332,16 +333,20 @@ type ResourceSharingSpec struct {
 	// Scope determines the sharing granularity for the ResourceClaims created from
 	// this template.
 	Scope ResourceSharingScope `json:"scope"`
-	// Filter narrows the scope by restricting which children within the
-	// chosen Scope receive the ResourceClaims. If absent, all children
-	// within scope receive them (broadcast).
-	// +optional
-	Filter *ResourceSharingFilter `json:"filter,omitempty"`
 }
 
-// ResourceSharingFilter controls which children receive the ResourceClaims.
-// Listed names are included; unlisted children do not receive the claims.
-type ResourceSharingFilter struct {
+// PCSResourceSharingSpec defines resource sharing at the PCS level. The filter
+// may target child PodCliques and/or child PodCliqueScalingGroups.
+type PCSResourceSharingSpec struct {
+	ResourceSharingSpecBase `json:",inline"`
+	// Filter narrows the scope by restricting which children receive the
+	// ResourceClaims. If absent, all children receive them (broadcast).
+	// +optional
+	Filter *PCSResourceSharingFilter `json:"filter,omitempty"`
+}
+
+// PCSResourceSharingFilter controls which PCS children receive the ResourceClaims.
+type PCSResourceSharingFilter struct {
 	// ChildCliqueNames limits distribution to the named immediate child PodCliques.
 	// +optional
 	ChildCliqueNames []string `json:"childCliqueNames,omitempty"`
@@ -349,30 +354,24 @@ type ResourceSharingFilter struct {
 	// +optional
 	ChildScalingGroupNames []string `json:"childScalingGroupNames,omitempty"`
 }
+
+// PCSGResourceSharingSpec defines resource sharing at the PCSG level. The filter
+// may only target child PodCliques (PCSGs cannot reference sibling scaling groups).
+type PCSGResourceSharingSpec struct {
+	ResourceSharingSpecBase `json:",inline"`
+	// Filter narrows the scope by restricting which child PodCliques receive the
+	// ResourceClaims. If absent, all PodCliques in the group receive them.
+	// +optional
+	Filter *PCSGResourceSharingFilter `json:"filter,omitempty"`
+}
+
+// PCSGResourceSharingFilter controls which PCSG child PodCliques receive the ResourceClaims.
+type PCSGResourceSharingFilter struct {
+	// ChildCliqueNames limits distribution to the named child PodCliques.
+	// +optional
+	ChildCliqueNames []string `json:"childCliqueNames,omitempty"`
+}
 ```
-
-**Scope Naming — Open Discussion**
-
-The `Scope` enum determines how many ResourceClaim instances are created per resource:
-- **Scope A**: 1 RC per **instance** of the resource, shared across all replicas within that instance
-- **Scope B**: 1 RC per **replica** of the resource
-
-Note that a resource (PCLQ, PCSG) can have multiple instances (e.g., PCLQ `worker` is instantiated once
-per PCSG replica). Scope A creates one RC per instance — not one RC globally. The naming must convey
-this "per instance, shared across replicas" semantic clearly.
-
-Candidate naming options considered:
-
-| Option | Scope A (1 RC per instance) | Scope B (1 RC per replica) | Notes |
-|---|---|---|---|
-| A | `Shared` | `PerReplica` | Intuitive but may suggest "1 RC globally" rather than "1 per instance" |
-| B | `PerInstance` | `PerReplica` | Technically precise; reviewer concern: `PerInstance` sounds similar to `PerReplica` without context |
-| **C (decided)** | **`AllReplicas`** | **`PerReplica`** | "Covers all replicas" vs "per replica"; short and clear |
-| D | `SharedAcrossReplicas` or `SharedByReplicas` | `ExclusivePerReplica` | Most explicit; verbose but unambiguous |
-
-The decided naming is `AllReplicas` / `PerReplica` (Option C).
-
----
 
 #### ResourceClaimTemplate Referencing
 
@@ -398,6 +397,13 @@ external Kubernetes objects. This forces a single source of truth and prevents i
   with the given `name`. If `namespace` is empty, the PCS namespace is used; otherwise the specified
   namespace is used.
 - Internal templates shadow external ones with the same name. This is deterministic and by design.
+
+**Error handling for missing external templates:** If an external `ResourceClaimTemplate` referenced
+by name/namespace is not found at reconcile time, the reconciler returns a transient error and requeues
+with standard controller-runtime exponential backoff. Pods that depend on the unresolved template are
+not created until the `ResourceClaimTemplate` becomes available. No status condition is set on the
+PCS — the operator relies on requeue to eventually resolve the reference once the external template
+is created.
 
 **Why no intermediate ResourceClaimTemplate objects are created:** Kubernetes' built-in RCT-to-RC
 auto-creation (`resourceClaimTemplateName` in the pod spec) creates a unique ResourceClaim per pod, which
@@ -542,7 +548,7 @@ type PodCliqueSetTemplateSpec struct {
 	// At PCS level, Filter may reference PodClique template names and/or
 	// PodCliqueScalingGroup config names.
 	// +optional
-	ResourceSharing []ResourceSharingSpec `json:"resourceSharing,omitempty"`
+	ResourceSharing []PCSResourceSharingSpec `json:"resourceSharing,omitempty"`
 	...
 }
 ```
@@ -704,11 +710,13 @@ type PodCliqueTemplateSpec struct {
 	// references a template (internal or external) and specifies a Scope:
 	//   - AllReplicas: one RC per PCLQ, shared by all replica pods
 	//   - PerReplica: one RC per PCLQ replica, shared by all pods within that replica
+	// PCLQ-level sharing uses ResourceSharingSpecBase directly (no filter field) since
+	// PodCliques have no children to filter on.
 	// NOTE: This is not the same as adding ResourceClaimTemplate inside the
 	// Spec.PodSpec.ResourceClaims[x].ResourceClaimTemplateName in the PodClique since that will
 	// create a unique ResourceClaim for each pod in the PodClique.
 	// +optional
-	ResourceSharing []ResourceSharingSpec `json:"resourceSharing,omitempty"`
+	ResourceSharing []ResourceSharingSpecBase `json:"resourceSharing,omitempty"`
 	// Specification of the desired behavior of a PodClique.
 	Spec PodCliqueSpec `json:"spec"`
 }
@@ -799,8 +807,10 @@ type PodCliqueScalingGroupConfig struct {
 	//   - AllReplicas: one RC for the entire PCSG, shared across all replicas
 	//   - PerReplica: one RC per PCSG replica, shared across all PCLQs in that replica
 	// Filter limits which PodCliques in the group receive the claims (empty = all).
+	// PCSG-level filter only supports childCliqueNames (not childScalingGroupNames),
+	// which is enforced by the type system via PCSGResourceSharingFilter.
 	// +optional
-	ResourceSharing []ResourceSharingSpec `json:"resourceSharing,omitempty"`
+	ResourceSharing []PCSGResourceSharingSpec `json:"resourceSharing,omitempty"`
 }
 ```
 
@@ -928,6 +938,10 @@ Each RC name is derived from the owning resource's Kubernetes name, a scope segm
 referenced template name (`rctName`). For `PerReplica` scope the segment is the replica index
 (e.g. `0`, `1`). For `AllReplicas` scope the literal keyword `all` takes the place of the replica
 index, ensuring that an AllReplicas RC name can never collide with a PerReplica RC name.
+The `all` sentinel is intentional: omitting it would make names ambiguous when the `rctName`
+starts with a digit (e.g. `disagg-0-pool` could be an AllReplicas RC for rctName `0-pool` or a
+PerReplica RC at index `0` for rctName `pool`). Using `all` keeps parsing unambiguous and
+collision-free.
 
 | Level + Scope | RC Name Format |
 |---|---|
@@ -989,6 +1003,15 @@ using label selectors scoped to the owning resource.
 with its owner — deleting a PCLQ, PCSG, or PCS automatically garbage-collects its RCs without
 requiring explicit cleanup.
 
+**RC creation and concurrency**: Each level's reconciler creates and owns RCs for its own
+`resourceSharing` entries only — the PCS reconciler creates PCS-level RCs, the PCSG reconciler
+creates PCSG-level RCs, and the PCLQ reconciler creates PCLQ-level RCs. Although
+`ResourceClaimTemplateSpec` definitions live at PCS level for deduplication, the `resourceSharing`
+entry at the respective level triggers RC creation. This means there is no concurrent creation
+of the same RC across reconcilers. As additional safety, the operator uses a Get/Create pattern:
+if a `ResourceClaim` already exists, the `AlreadyExists` error is handled gracefully and the
+reconciler proceeds without error.
+
 ### Immutability of Resource Sharing Fields
 
 The `resourceSharing` fields (at PCS, PCSG, and PCLQ template levels) and `resourceClaimTemplates`
@@ -1004,12 +1027,6 @@ Users who need to change resource sharing configuration should delete and recrea
 > **Follow-up**: If there is demand for in-place mutation, a future iteration could implement
 > a reconcile-based diff (tracking previous state via status or annotations) to handle cleanup
 > and rolling pod updates. Relaxing immutability is a non-breaking change.
-
-### Monitoring
-
-<!--
-This section contains details of events, metrics, status conditions and other status fields that will aid in determining health of the feature, or help measure any service level objectives that might be optionally defined.
--->
 
 ### Dependencies
 
@@ -1035,9 +1052,9 @@ For the functionality an epic (issue) should be created. Along with a sub-issue 
 
 The scheduler module defines a `NamespacedName` type with JSON tags
 (in `scheduler/api/core/v1alpha1/podgang.go`) because `types.NamespacedName` from apimachinery
-lacks them. The `Name`/`Namespace` fields on `ResourceSharingSpec` serve a similar purpose but
+lacks them. The `Name`/`Namespace` fields on `ResourceSharingSpecBase` serve a similar purpose but
 are not a direct fit for reuse: in the scheduler's `NamespacedName` both `Namespace` and `Name` are
-required fields, whereas in `ResourceSharingSpec` the `Namespace` is optional (it defaults to the
+required fields, whereas in `ResourceSharingSpecBase` the `Namespace` is optional (it defaults to the
 PCS namespace when omitted). A common API module (e.g., `grove/api/common`) could host a shared type
 if `Namespace` is made optional (with `omitempty`), but this would require updating the scheduler's
 usage as well. Tracked as a follow-up item, orthogonal to this GREP.
