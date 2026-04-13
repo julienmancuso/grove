@@ -214,11 +214,13 @@ func injectAllResourceClaimRefs(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grove
 		if pcsgConfig != nil {
 			matchNames = append(matchNames, pcsgConfig.Name)
 		}
-		if idxStr, exists := pclq.Labels[apicommon.LabelPodCliqueScalingGroupReplicaIndex]; exists {
-			pcsgReplicaIndex, err = strconv.Atoi(idxStr)
-			if err != nil {
-				return fmt.Errorf("invalid PCSG replica index label %q: %w", idxStr, err)
-			}
+		idxStr, exists := pclq.Labels[apicommon.LabelPodCliqueScalingGroupReplicaIndex]
+		if !exists {
+			return fmt.Errorf("missing PCSG replica index label %q for PodCliqueScalingGroup %q", apicommon.LabelPodCliqueScalingGroupReplicaIndex, pcsgName)
+		}
+		pcsgReplicaIndex, err = strconv.Atoi(idxStr)
+		if err != nil {
+			return fmt.Errorf("invalid PCSG replica index label %q: %w", idxStr, err)
 		}
 	}
 

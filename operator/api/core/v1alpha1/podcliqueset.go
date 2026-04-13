@@ -257,10 +257,10 @@ type PodCliqueTemplateSpec struct {
 	// ResourceSharing defines shared ResourceClaims for this PodClique.
 	// Each entry references a template (internal or external) and specifies a Scope:
 	//   - AllReplicas: one RC per PCLQ, shared by all replica pods
-	//   - PerReplica: one RC per PCLQ replica, shared by all pods within that replica
+	//   - PerReplica: one RC per PCLQ replica, shared across containers in that replica's pod
 	// This is distinct from adding ResourceClaimTemplate inside
 	// Spec.PodSpec.ResourceClaims[x].ResourceClaimTemplateName, which creates a unique
-	// ResourceClaim for each pod.
+	// ResourceClaim for each pod replica.
 	// PCLQs have no children to filter, so no Filter field is available.
 	// +optional
 	ResourceSharing []ResourceSharingSpecBase `json:"resourceSharing,omitempty"`
