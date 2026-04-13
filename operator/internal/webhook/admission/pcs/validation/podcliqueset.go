@@ -731,7 +731,7 @@ func (v *pcsValidator) validatePodCliqueUpdate(oldCliques []*grovecorev1alpha1.P
 		allErrs = append(allErrs, apivalidation.ValidateImmutableField(newClique.Spec.MinAvailable, oldIndexCliqueTuple.B.Spec.MinAvailable, cliqueFldPath.Child("minAvailable"))...)
 		allErrs = append(allErrs, apivalidation.ValidateImmutableField(newClique.Spec.StartsAfter, oldIndexCliqueTuple.B.Spec.StartsAfter, cliqueFldPath.Child("startsAfter"))...)
 		allErrs = append(allErrs, apivalidation.ValidateImmutableField(newClique.Spec.PodSpec.SchedulerName, oldIndexCliqueTuple.B.Spec.PodSpec.SchedulerName, cliqueFldPath.Child("podSpec", "schedulerName"))...)
-		allErrs = append(allErrs, apivalidation.ValidateImmutableField(newClique.ResourceSharing, oldIndexCliqueTuple.B.ResourceSharing, fldPath.Child("resourceSharing"))...)
+		allErrs = append(allErrs, apivalidation.ValidateImmutableField(newClique.ResourceSharing, oldIndexCliqueTuple.B.ResourceSharing, fldPath.Index(newCliqueIndex).Child("resourceSharing"))...)
 	}
 
 	return allErrs

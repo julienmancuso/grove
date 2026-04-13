@@ -56,6 +56,17 @@ var gpuTemplate = grovecorev1alpha1.ResourceClaimTemplateConfig{
 	},
 }
 
+var gpuSharedTemplate = grovecorev1alpha1.ResourceClaimTemplateConfig{
+	Name: "gpu-shared",
+	TemplateSpec: resourcev1.ResourceClaimTemplateSpec{
+		Spec: resourcev1.ResourceClaimSpec{
+			Devices: resourcev1.DeviceClaim{
+				Requests: []resourcev1.DeviceRequest{{Name: "gpu-shared"}},
+			},
+		},
+	},
+}
+
 func newPCS(replicas int32, refs []grovecorev1alpha1.PCSResourceSharingSpec, templates []grovecorev1alpha1.ResourceClaimTemplateConfig) *grovecorev1alpha1.PodCliqueSet {
 	return &grovecorev1alpha1.PodCliqueSet{
 		ObjectMeta: metav1.ObjectMeta{Name: pcsName, Namespace: namespace, UID: "pcs-uid"},
@@ -128,10 +139,10 @@ func TestSync(t *testing.T) {
 	scheme := newTestScheme()
 
 	refs := []grovecorev1alpha1.PCSResourceSharingSpec{
-		{ResourceSharingSpecBase: grovecorev1alpha1.ResourceSharingSpecBase{Name: "gpu-mps", Scope: grovecorev1alpha1.ResourceSharingScopeAllReplicas}},
+		{ResourceSharingSpecBase: grovecorev1alpha1.ResourceSharingSpecBase{Name: "gpu-shared", Scope: grovecorev1alpha1.ResourceSharingScopeAllReplicas}},
 		{ResourceSharingSpecBase: grovecorev1alpha1.ResourceSharingSpecBase{Name: "gpu-mps", Scope: grovecorev1alpha1.ResourceSharingScopePerReplica}},
 	}
-	templates := []grovecorev1alpha1.ResourceClaimTemplateConfig{gpuTemplate}
+	templates := []grovecorev1alpha1.ResourceClaimTemplateConfig{gpuTemplate, gpuSharedTemplate}
 
 	t.Run("creates AllReplicas and PerReplica RCs", func(t *testing.T) {
 		pcs := newPCS(2, refs, templates)
@@ -144,7 +155,7 @@ func TestSync(t *testing.T) {
 		rc := &resourcev1.ResourceClaim{}
 
 		require.NoError(t, cl.Get(context.Background(), types.NamespacedName{
-			Name: pcsName + "-all-gpu-mps", Namespace: namespace,
+			Name: pcsName + "-all-gpu-shared", Namespace: namespace,
 		}, rc))
 
 		require.NoError(t, cl.Get(context.Background(), types.NamespacedName{
@@ -167,7 +178,7 @@ func TestSync(t *testing.T) {
 
 		rc := &resourcev1.ResourceClaim{}
 		require.NoError(t, cl.Get(context.Background(), types.NamespacedName{
-			Name: pcsName + "-all-gpu-mps", Namespace: namespace,
+			Name: pcsName + "-all-gpu-shared", Namespace: namespace,
 		}, rc))
 		require.Len(t, rc.OwnerReferences, 1)
 		assert.Equal(t, pcsName, rc.OwnerReferences[0].Name)
@@ -255,7 +266,7 @@ func TestDelete(t *testing.T) {
 	t.Run("deletes all PCS-level RCs", func(t *testing.T) {
 		pcsMeta := metav1.ObjectMeta{Name: pcsName, Namespace: namespace}
 
-		rc1 := newRC(pcsName+"-all-gpu-mps", labels)
+		rc1 := newRC(pcsName+"-all-gpu-shared", labels)
 		rc2 := newRC(pcsName+"-0-gpu-mps", labels)
 		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rc1, rc2).Build()
 		r := _resource{client: cl, scheme: scheme}
@@ -264,7 +275,7 @@ func TestDelete(t *testing.T) {
 		require.NoError(t, err)
 
 		rc := &resourcev1.ResourceClaim{}
-		assert.Error(t, cl.Get(context.Background(), types.NamespacedName{Name: pcsName + "-all-gpu-mps", Namespace: namespace}, rc))
+		assert.Error(t, cl.Get(context.Background(), types.NamespacedName{Name: pcsName + "-all-gpu-shared", Namespace: namespace}, rc))
 		assert.Error(t, cl.Get(context.Background(), types.NamespacedName{Name: pcsName + "-0-gpu-mps", Namespace: namespace}, rc))
 	})
 

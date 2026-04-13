@@ -27,6 +27,7 @@ import (
 	groveerr "github.com/ai-dynamo/grove/operator/internal/errors"
 	"github.com/ai-dynamo/grove/operator/internal/resourceclaim"
 	groveutils "github.com/ai-dynamo/grove/operator/internal/utils"
+	k8sutils "github.com/ai-dynamo/grove/operator/internal/utils/kubernetes"
 
 	"github.com/go-logr/logr"
 	resourcev1 "k8s.io/api/resource/v1"
@@ -69,11 +70,7 @@ func (r _resource) GetExistingResourceNames(ctx context.Context, _ logr.Logger, 
 			fmt.Sprintf("Error listing ResourceClaims for PCLQ %s", pclqObjMeta.Name),
 		)
 	}
-	names := make([]string, 0, len(objMetaList.Items))
-	for _, obj := range objMetaList.Items {
-		names = append(names, obj.Name)
-	}
-	return names, nil
+	return k8sutils.FilterMapOwnedResourceNames(pclqObjMeta, objMetaList.Items), nil
 }
 
 // Sync creates or patches PCLQ-level ResourceClaims (AllReplicas + PerReplica)
@@ -107,7 +104,28 @@ func (r _resource) Sync(ctx context.Context, _ logr.Logger, pclq *grovecorev1alp
 	labels := pclqResourceClaimLabels(pclq.ObjectMeta)
 	currentReplicas := int(pclq.Spec.Replicas)
 
-	// AllReplicas scope
+	if err := r.ensureAllReplicasRCs(ctx, pclq, pcs, resourceSharers, labels); err != nil {
+		return err
+	}
+	if err := r.ensurePerReplicaRCs(ctx, pclq, pcs, resourceSharers, labels, currentReplicas); err != nil {
+		return err
+	}
+
+	return resourceclaim.CleanupStalePerReplicaRCs(
+		ctx, r.client,
+		pclq.Namespace, labels,
+		currentReplicas,
+		apicommon.LabelPodCliquePodIndex,
+	)
+}
+
+func (r _resource) ensureAllReplicasRCs(
+	ctx context.Context,
+	pclq *grovecorev1alpha1.PodClique,
+	pcs *grovecorev1alpha1.PodCliqueSet,
+	resourceSharers []resourceclaim.ResourceSharer,
+	labels map[string]string,
+) error {
 	if err := resourceclaim.EnsureResourceClaims(
 		ctx, r.client,
 		pclq.Name, pclq.Namespace,
@@ -123,8 +141,17 @@ func (r _resource) Sync(ctx context.Context, _ logr.Logger, pclq *grovecorev1alp
 			fmt.Sprintf("Error ensuring PCLQ AllReplicas RCs for %s", client.ObjectKeyFromObject(pclq)),
 		)
 	}
+	return nil
+}
 
-	// PerReplica scope
+func (r _resource) ensurePerReplicaRCs(
+	ctx context.Context,
+	pclq *grovecorev1alpha1.PodClique,
+	pcs *grovecorev1alpha1.PodCliqueSet,
+	resourceSharers []resourceclaim.ResourceSharer,
+	labels map[string]string,
+	currentReplicas int,
+) error {
 	for replicaIdx := range currentReplicas {
 		idx := replicaIdx
 		replicaLabels := maps.Clone(labels)
@@ -145,13 +172,7 @@ func (r _resource) Sync(ctx context.Context, _ logr.Logger, pclq *grovecorev1alp
 			)
 		}
 	}
-
-	return resourceclaim.CleanupStalePerReplicaRCs(
-		ctx, r.client,
-		pclq.Namespace, labels,
-		currentReplicas,
-		apicommon.LabelPodCliquePodIndex,
-	)
+	return nil
 }
 
 // pclqResourceClaimLabels returns the standard RC labels plus grove.io/podclique

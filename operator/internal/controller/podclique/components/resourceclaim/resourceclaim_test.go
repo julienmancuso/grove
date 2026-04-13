@@ -96,9 +96,34 @@ var gpuTemplate = grovecorev1alpha1.ResourceClaimTemplateConfig{
 	},
 }
 
-func newRC(name string, labels map[string]string) *resourcev1.ResourceClaim {
+var gpuSharedTemplate = grovecorev1alpha1.ResourceClaimTemplateConfig{
+	Name: "gpu-shared",
+	TemplateSpec: resourcev1.ResourceClaimTemplateSpec{
+		Spec: resourcev1.ResourceClaimSpec{
+			Devices: resourcev1.DeviceClaim{
+				Requests: []resourcev1.DeviceRequest{{Name: "gpu-shared"}},
+			},
+		},
+	},
+}
+
+func newRC(name string, labels map[string]string, ownerName string, ownerUID types.UID) *resourcev1.ResourceClaim {
+	controller := true
 	return &resourcev1.ResourceClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    labels,
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: grovecorev1alpha1.SchemeGroupVersion.String(),
+					Kind:       "PodClique",
+					Name:       ownerName,
+					UID:        ownerUID,
+					Controller: &controller,
+				},
+			},
+		},
 	}
 }
 
@@ -127,13 +152,14 @@ func TestGetExistingResourceNames(t *testing.T) {
 	pclqMeta := metav1.ObjectMeta{
 		Name:      pclqName,
 		Namespace: namespace,
+		UID:       "pclq-uid",
 		Labels:    map[string]string{apicommon.LabelPartOfKey: pcsName},
 	}
 	pclqLabels := pclqResourceClaimLabels(pclqMeta)
 
 	t.Run("returns matching RCs", func(t *testing.T) {
-		rc1 := newRC(pclqName+"-all-gpu-mps", pclqLabels)
-		rc2 := newRC(pclqName+"-0-gpu-mps", pclqLabels)
+		rc1 := newRC(pclqName+"-all-gpu-mps", pclqLabels, pclqName, "pclq-uid")
+		rc2 := newRC(pclqName+"-0-gpu-mps", pclqLabels, pclqName, "pclq-uid")
 		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rc1, rc2).Build()
 		r := _resource{client: cl, scheme: scheme}
 
@@ -156,8 +182,8 @@ func TestGetExistingResourceNames(t *testing.T) {
 		otherLabels := resourceclaim.ResourceClaimLabels(pcsName)
 		otherLabels[apicommon.LabelPodClique] = "my-pcs-0-router"
 
-		ownRC := newRC(pclqName+"-all-gpu-mps", pclqLabels)
-		otherRC := newRC("my-pcs-0-router-all-gpu-mps", otherLabels)
+		ownRC := newRC(pclqName+"-all-gpu-mps", pclqLabels, pclqName, "pclq-uid")
+		otherRC := newRC("my-pcs-0-router-all-gpu-mps", otherLabels, "my-pcs-0-router", "other-uid")
 		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ownRC, otherRC).Build()
 		r := _resource{client: cl, scheme: scheme}
 
@@ -173,10 +199,10 @@ func TestSync(t *testing.T) {
 	scheme := newTestScheme()
 
 	refs := []grovecorev1alpha1.ResourceSharingSpecBase{
-		{Name: "gpu-mps", Scope: grovecorev1alpha1.ResourceSharingScopeAllReplicas},
+		{Name: "gpu-shared", Scope: grovecorev1alpha1.ResourceSharingScopeAllReplicas},
 		{Name: "gpu-mps", Scope: grovecorev1alpha1.ResourceSharingScopePerReplica},
 	}
-	templates := []grovecorev1alpha1.ResourceClaimTemplateConfig{gpuTemplate}
+	templates := []grovecorev1alpha1.ResourceClaimTemplateConfig{gpuTemplate, gpuSharedTemplate}
 
 	t.Run("creates AllReplicas and PerReplica RCs", func(t *testing.T) {
 		pcs := newPCS(refs, templates)
@@ -191,7 +217,7 @@ func TestSync(t *testing.T) {
 
 		// AllReplicas RC
 		require.NoError(t, cl.Get(context.Background(), types.NamespacedName{
-			Name: pclqName + "-all-gpu-mps", Namespace: namespace,
+			Name: pclqName + "-all-gpu-shared", Namespace: namespace,
 		}, rc))
 		assert.Equal(t, pclqName, rc.Labels[apicommon.LabelPodClique])
 
@@ -237,7 +263,7 @@ func TestSync(t *testing.T) {
 			staleLabels[k] = v
 		}
 		staleLabels[apicommon.LabelPodCliquePodIndex] = "2"
-		staleRC := newRC(pclqName+"-2-gpu-mps", staleLabels)
+		staleRC := newRC(pclqName+"-2-gpu-mps", staleLabels, pclqName, "pclq-uid")
 
 		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pcs, staleRC).Build()
 		r := _resource{client: cl, scheme: scheme}
@@ -312,8 +338,8 @@ func TestDelete(t *testing.T) {
 		}
 		pclqLabels := pclqResourceClaimLabels(pclqMeta)
 
-		rc1 := newRC(pclqName+"-all-gpu-mps", pclqLabels)
-		rc2 := newRC(pclqName+"-0-gpu-mps", pclqLabels)
+		rc1 := newRC(pclqName+"-all-gpu-mps", pclqLabels, pclqName, "pclq-uid")
+		rc2 := newRC(pclqName+"-0-gpu-mps", pclqLabels, pclqName, "pclq-uid")
 		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rc1, rc2).Build()
 		r := _resource{client: cl, scheme: scheme}
 
@@ -336,8 +362,8 @@ func TestDelete(t *testing.T) {
 		otherLabels := resourceclaim.ResourceClaimLabels(pcsName)
 		otherLabels[apicommon.LabelPodClique] = "my-pcs-0-router"
 
-		ownRC := newRC(pclqName+"-all-gpu-mps", pclqLabels)
-		otherRC := newRC("my-pcs-0-router-all-gpu-mps", otherLabels)
+		ownRC := newRC(pclqName+"-all-gpu-mps", pclqLabels, pclqName, "pclq-uid")
+		otherRC := newRC("my-pcs-0-router-all-gpu-mps", otherLabels, "my-pcs-0-router", "other-uid")
 		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ownRC, otherRC).Build()
 		r := _resource{client: cl, scheme: scheme}
 

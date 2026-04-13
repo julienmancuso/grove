@@ -427,7 +427,10 @@ func Test_RS1_HierarchicalResourceSharing(t *testing.T) {
 	verifyPodState(t, tc, podSelector, 7, pcsScaleOutPodRefs())
 	Logger.Info("   Verified 24 RCs and 7 pods after PCS scale-out")
 
-	Logger.Info("13. Scale PCS from 2 to 1")
+	Logger.Info("13. Re-verify ownerReferences after PCS scale-out (rep-1 code path)")
+	verifyOwnerReferences(t, tc, rcLabelSelector, pcsScaleOutOwnerRefs())
+
+	Logger.Info("14. Scale PCS from 2 to 1")
 	if err := scalePodCliqueSet(tc, rsWorkloadName, 1); err != nil {
 		t.Fatalf("Failed to scale PCS to 1: %v", err)
 	}
@@ -437,7 +440,7 @@ func Test_RS1_HierarchicalResourceSharing(t *testing.T) {
 
 	// --- Immutability rejection ---
 
-	Logger.Info("14. Verify webhook rejects immutable resourceSharing change")
+	Logger.Info("15. Verify webhook rejects immutable resourceSharing change")
 	verifyImmutabilityRejection(t, tc)
 
 	Logger.Info("Hierarchical resource sharing e2e test completed successfully!")
@@ -608,8 +611,8 @@ func initialOwnerRefs() map[string]expectedOwner {
 		"rs-test-0-int-tpl":    {Kind: "PodCliqueSet", Name: "rs-test"},
 		"rs-test-all-int-tpl7": {Kind: "PodCliqueSet", Name: "rs-test"},
 		// PCLQ worker-a RCs → owned by PodClique
-		"rs-test-0-worker-a-0-int-tpl4":      {Kind: "PodClique", Name: "rs-test-0-worker-a"},
-		"rs-test-0-worker-a-all-ext-ns-tpl":   {Kind: "PodClique", Name: "rs-test-0-worker-a"},
+		"rs-test-0-worker-a-0-int-tpl4":    {Kind: "PodClique", Name: "rs-test-0-worker-a"},
+		"rs-test-0-worker-a-all-ext-ns-tpl": {Kind: "PodClique", Name: "rs-test-0-worker-a"},
 		// PCSG sga RCs → owned by PodCliqueScalingGroup
 		"rs-test-0-sga-all-int-tpl2": {Kind: "PodCliqueScalingGroup", Name: "rs-test-0-sga"},
 		"rs-test-0-sga-0-int-tpl3":   {Kind: "PodCliqueScalingGroup", Name: "rs-test-0-sga"},
@@ -619,6 +622,44 @@ func initialOwnerRefs() map[string]expectedOwner {
 		"rs-test-0-sga-0-worker-b-all-int-tpl6": {Kind: "PodClique", Name: "rs-test-0-sga-0-worker-b"},
 		"rs-test-0-sga-1-worker-b-all-int-tpl6": {Kind: "PodClique", Name: "rs-test-0-sga-1-worker-b"},
 	}
+}
+
+// pcsScaleOutOwnerRefs: all 24 RCs after PCS scale-out (rep 0 sga=3, rep 1 sga=2).
+func pcsScaleOutOwnerRefs() map[string]expectedOwner {
+	refs := map[string]expectedOwner{
+		// PCS-level RCs → owned by PodCliqueSet
+		"rs-test-all-int-tpl5": {Kind: "PodCliqueSet", Name: "rs-test"},
+		"rs-test-0-ext-tpl":    {Kind: "PodCliqueSet", Name: "rs-test"},
+		"rs-test-0-int-tpl":    {Kind: "PodCliqueSet", Name: "rs-test"},
+		"rs-test-all-int-tpl7": {Kind: "PodCliqueSet", Name: "rs-test"},
+		"rs-test-1-ext-tpl":    {Kind: "PodCliqueSet", Name: "rs-test"},
+		"rs-test-1-int-tpl":    {Kind: "PodCliqueSet", Name: "rs-test"},
+		// Rep 0: standalone PCLQ worker-a
+		"rs-test-0-worker-a-0-int-tpl4":    {Kind: "PodClique", Name: "rs-test-0-worker-a"},
+		"rs-test-0-worker-a-all-ext-ns-tpl": {Kind: "PodClique", Name: "rs-test-0-worker-a"},
+		// Rep 0: PCSG sga (3 replicas after scale-out in step 9)
+		"rs-test-0-sga-all-int-tpl2": {Kind: "PodCliqueScalingGroup", Name: "rs-test-0-sga"},
+		"rs-test-0-sga-0-int-tpl3":   {Kind: "PodCliqueScalingGroup", Name: "rs-test-0-sga"},
+		"rs-test-0-sga-1-int-tpl3":   {Kind: "PodCliqueScalingGroup", Name: "rs-test-0-sga"},
+		"rs-test-0-sga-2-int-tpl3":   {Kind: "PodCliqueScalingGroup", Name: "rs-test-0-sga"},
+		"rs-test-0-sga-all-int-tpl8": {Kind: "PodCliqueScalingGroup", Name: "rs-test-0-sga"},
+		// Rep 0: PCLQ worker-b in sga (3 replicas)
+		"rs-test-0-sga-0-worker-b-all-int-tpl6": {Kind: "PodClique", Name: "rs-test-0-sga-0-worker-b"},
+		"rs-test-0-sga-1-worker-b-all-int-tpl6": {Kind: "PodClique", Name: "rs-test-0-sga-1-worker-b"},
+		"rs-test-0-sga-2-worker-b-all-int-tpl6": {Kind: "PodClique", Name: "rs-test-0-sga-2-worker-b"},
+		// Rep 1: standalone PCLQ worker-a
+		"rs-test-1-worker-a-0-int-tpl4":    {Kind: "PodClique", Name: "rs-test-1-worker-a"},
+		"rs-test-1-worker-a-all-ext-ns-tpl": {Kind: "PodClique", Name: "rs-test-1-worker-a"},
+		// Rep 1: PCSG sga (2 replicas from template)
+		"rs-test-1-sga-all-int-tpl2": {Kind: "PodCliqueScalingGroup", Name: "rs-test-1-sga"},
+		"rs-test-1-sga-0-int-tpl3":   {Kind: "PodCliqueScalingGroup", Name: "rs-test-1-sga"},
+		"rs-test-1-sga-1-int-tpl3":   {Kind: "PodCliqueScalingGroup", Name: "rs-test-1-sga"},
+		"rs-test-1-sga-all-int-tpl8": {Kind: "PodCliqueScalingGroup", Name: "rs-test-1-sga"},
+		// Rep 1: PCLQ worker-b in sga (2 replicas)
+		"rs-test-1-sga-0-worker-b-all-int-tpl6": {Kind: "PodClique", Name: "rs-test-1-sga-0-worker-b"},
+		"rs-test-1-sga-1-worker-b-all-int-tpl6": {Kind: "PodClique", Name: "rs-test-1-sga-1-worker-b"},
+	}
+	return refs
 }
 
 func verifyOwnerReferences(t *testing.T, tc TestContext, labelSelector string, expected map[string]expectedOwner) {
