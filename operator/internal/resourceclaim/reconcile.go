@@ -96,17 +96,17 @@ func EnsureResourceClaim(
 		if err := controllerutil.SetControllerReference(owner, rc, scheme); err != nil {
 			return err
 		}
-		if createErr := cl.Create(ctx, rc); createErr != nil {
-			if !apierrors.IsAlreadyExists(createErr) {
-				return createErr
-			}
-			// Stale cache: the RC was created between our Get and Create.
-			// Re-fetch and fall through to the update path below.
-			if err := cl.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, rc); err != nil {
-				return err
-			}
-		} else {
+		createErr := cl.Create(ctx, rc)
+		if createErr == nil {
 			return nil
+		}
+		if !apierrors.IsAlreadyExists(createErr) {
+			return createErr
+		}
+		// Stale cache: the RC was created between our Get and Create.
+		// Re-fetch and fall through to the update path below.
+		if err := cl.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, rc); err != nil {
+			return err
 		}
 	} else if err != nil {
 		return err

@@ -211,12 +211,11 @@ func injectAllResourceClaimRefs(pcs *grovecorev1alpha1.PodCliqueSet, pclq *grove
 	var pcsgReplicaIndex int
 	if pcsgName != "" {
 		pcsgConfig = resourceclaim.FindPCSGConfigByName(pcs, pcsgName, pcsReplicaIndex)
-		if pcsgConfig != nil {
-			matchNames = append(matchNames, pcsgConfig.Name)
-		} else {
+		if pcsgConfig == nil {
 			return fmt.Errorf("PCSG label %q present on PodClique %q but no matching PodCliqueScalingGroupConfig found in PCS %q",
 				pcsgName, pclq.Name, pcs.Name)
 		}
+		matchNames = append(matchNames, pcsgConfig.Name)
 		idxStr, exists := pclq.Labels[apicommon.LabelPodCliqueScalingGroupReplicaIndex]
 		if !exists {
 			return fmt.Errorf("missing PCSG replica index label %q for PodCliqueScalingGroup %q", apicommon.LabelPodCliqueScalingGroupReplicaIndex, pcsgName)
